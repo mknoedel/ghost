@@ -1,193 +1,105 @@
-const { clipboard, screen, globalShortcut } = require('electron');
+const { globalShortcut } = require('electron');
 const nut = require('@nut-tree-fork/nut-js');
 const { keyboard: nutKeyboard, Key: nutKey } = nut;
 
-// Platform-specific native watchers
-let nativeWatcher = null;
-try {
-  if (process.platform === 'darwin') {
-    nativeWatcher = require('./native/mac-selection');
-  } else if (process.platform === 'win32') {
-    nativeWatcher = require('./native/win-selection');
-  } else if (process.platform === 'linux') {
-    nativeWatcher = require('./native/linux-selection');
-  }
-} catch (error) {
-  console.warn('Native selection watcher not available:', error.message);
-}
+// Only macOS selection monitoring
+const macSelection = require('./native/mac-selection');
 
 class SelectionMonitor {
-  constructor(onSelectionCallback, pollMs = 150) {
+  constructor(onSelectionCallback) {
     this.onSelection = onSelectionCallback;
-    this.pollMs = pollMs;
-    this.lastSelection = null;
-    this.timer = null;
-    this.usingNativeWatcher = false;
-    this.lastBounds = null;
-    this.debounceTimer = null;
-    this.lastSelectionKey = null;
+    this.isRunning = false;
   }
 
-  /* ───────────── lifecycle ───────────── */
-
   start() {
-    if (this.timer || this.usingNativeWatcher) return; // already running
-
-    // Try to start native watcher first
-    if (nativeWatcher && this.tryStartNativeWatcher()) {
-      this.usingNativeWatcher = true;
-      console.log(`Selection monitor started using native watcher (${process.platform})`);
-    } else {
-      // Fallback strategies per platform
-      if (process.platform === 'linux') {
-        // On Linux, still try polling as final fallback
-        this.timer = setInterval(() => this.check(), this.pollMs);
-        console.log('Selection monitor started using clipboard polling (Linux fallback)');
-      } else {
-        console.log('Selection monitor started in manual trigger mode only');
-      }
+    if (this.isRunning) {
+      console.log('[SelectionMonitor] Already running');
+      return;
     }
 
-    // Register manual fallback for all platforms
-    globalShortcut.register('CommandOrControl+Shift+G', () =>
-      this.handleManualTrigger()
-    );
+    console.log('[SelectionMonitor] Starting...');
+
+    // Only try macOS selection monitoring
+    if (process.platform === 'darwin') {
+      console.log('[SelectionMonitor] Starting macOS selection watcher...');
+      const started = macSelection.startWatching(this.onSelection);
+      
+      if (started) {
+        this.isRunning = true;
+        console.log('[SelectionMonitor] ✅ macOS selection watcher active');
+      } else {
+        console.log('[SelectionMonitor] ❌ macOS selection watcher failed, manual mode only');
+      }
+    } else {
+      console.log(`[SelectionMonitor] Platform ${process.platform} not supported, manual mode only`);
+    }
+
+    // Always register manual trigger hotkey as fallback
+    globalShortcut.register('CommandOrControl+Shift+G', () => {
+      console.log('[SelectionMonitor] Manual trigger activated');
+      this.handleManualTrigger();
+    });
+
+    console.log('[SelectionMonitor] Manual hotkey (Cmd/Ctrl+Shift+G) registered');
   }
 
   stop() {
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
+    if (!this.isRunning) return;
+
+    console.log('[SelectionMonitor] Stopping...');
+
+    // Stop macOS watcher if running
+    if (process.platform === 'darwin') {
+      macSelection.stopWatching();
     }
-    
-    if (this.usingNativeWatcher && nativeWatcher) {
-      try {
-        nativeWatcher.stopWatching();
-      } catch (error) {
-        console.error('Error stopping native watcher:', error);
-      }
-      this.usingNativeWatcher = false;
-    }
-    
-    if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
-      this.debounceTimer = null;
-    }
-    
+
+    // Unregister hotkey
     globalShortcut.unregister('CommandOrControl+Shift+G');
-    console.log('Selection monitor stopped');
-  }
-
-  /* ───────────── native watcher ───────────── */
-
-  tryStartNativeWatcher() {
-    try {
-      return nativeWatcher.startWatching((text, bounds) => {
-        this.handleNativeSelection(text, bounds);
-      });
-    } catch (error) {
-      console.error('Failed to start native watcher:', error);
-      return false;
-    }
-  }
-
-  handleNativeSelection(text, bounds) {
-    if (!text || text.trim().length === 0) return;
     
-    // Check if text contains 'a' (case insensitive)
-    if (!text.toLowerCase().includes('a')) return;
-    
-    // Debounce rapid selections to prevent jitter
-    this.debouncedFireCallback(text, bounds);
+    this.isRunning = false;
+    console.log('[SelectionMonitor] Stopped');
   }
-
-  debouncedFireCallback(text, bounds) {
-    // Clear existing debounce timer
-    if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
-    }
-    
-    // Check if this is a duplicate of recent selection
-    const boundsKey = bounds ? `${Math.round(bounds.x/10)*10},${Math.round(bounds.y/10)*10}` : 'unknown';
-    const selectionKey = `${text.slice(0, 50)}_${boundsKey}`;
-    
-    if (this.lastSelectionKey === selectionKey) {
-      return; // Skip duplicate
-    }
-    
-    this.debounceTimer = setTimeout(() => {
-      this.lastSelectionKey = selectionKey;
-      this.lastSelection = text;
-      this.lastBounds = bounds;
-      
-      if (typeof this.onSelection === 'function') {
-        this.onSelection({ 
-          text, 
-          x: bounds ? bounds.x : screen.getCursorScreenPoint().x,
-          y: bounds ? bounds.y : screen.getCursorScreenPoint().y,
-          timestamp: Date.now() 
-        });
-      }
-    }, 250); // 250ms debounce
-  }
-
-  /* ───────────── passive poll ───────────── */
-
-  check() {
-    // On macOS & Linux Electron exposes a dedicated “selection” pasteboard
-    // that updates when the user selects text *without* copying.
-    const raw = (clipboard.readText('selection') || '').trim();
-
-    console.log({lastSection: this.lastSelection, raw})
-
-    if (raw === this.lastSelection) return; // nothing new
-
-    // If we’ve got a genuinely new selection – remember it
-    this.lastSelection = raw ?? this.lastSelection;
-
-    // Only act if it contains an “a” (case‑insensitive)
-    if (raw.toLowerCase().includes('a')) this.fireCallback(raw);
-  }
-
-  /* ───────────── manual fallback ───────────── */
 
   async handleManualTrigger() {
-    const original = clipboard.readText();          // preserve user clipboard
     try {
-      const mod = process.platform === 'darwin' ? nutKey.LeftMeta
-                                                : nutKey.LeftControl;
+      // Get current clipboard content to restore later
+      const { clipboard } = require('electron');
+      const originalClipboard = clipboard.readText();
+
+      // Send copy command
+      const mod = process.platform === 'darwin' ? nutKey.LeftMeta : nutKey.LeftControl;
       await nutKeyboard.pressKey(mod, nutKey.C);
       await nutKeyboard.releaseKey(mod, nutKey.C);
 
-      await new Promise(r => setTimeout(r, 120));   // wait for clipboard
+      // Wait for clipboard to update
+      await new Promise(resolve => setTimeout(resolve, 120));
 
-      const copied = (clipboard.readText() || '').trim();
-      if (!copied || copied === this.lastSelection) return;
-      this.lastSelection = copied;
+      // Get copied text
+      const copiedText = clipboard.readText() || '';
 
-      if (copied.toLowerCase().includes('a')) this.fireCallback(copied);
-    } catch (err) {
-      console.error('Manual trigger failed:', err);
-    } finally {
-      clipboard.writeText(original);                // put clipboard back
+      // Restore original clipboard
+      clipboard.writeText(originalClipboard);
+
+      // Check if we got valid text with 'a'
+      if (copiedText.trim().length > 0 && copiedText.toLowerCase().includes('a')) {
+        console.log(`[SelectionMonitor] Manual trigger: "${copiedText.slice(0, 30)}${copiedText.length > 30 ? '...' : ''}"`);
+        
+        const { screen } = require('electron');
+        const cursor = screen.getCursorScreenPoint();
+        
+        this.onSelection({
+          text: copiedText,
+          x: cursor.x,
+          y: cursor.y,
+          timestamp: Date.now()
+        });
+      } else {
+        console.log(`[SelectionMonitor] Manual trigger: no valid text (${copiedText.length} chars, contains 'a': ${copiedText.toLowerCase().includes('a')})`);
+      }
+
+    } catch (error) {
+      console.error('[SelectionMonitor] Manual trigger failed:', error);
     }
-  }
-
-  /* ───────────── callback helper ───────────── */
-
-  fireCallback(text) {
-    if (typeof this.onSelection !== 'function') return;
-
-    const { x, y } = screen.getCursorScreenPoint();
-    this.onSelection({ text, x, y, timestamp: Date.now() });
-  }
-
-  /* ───────────── optional utility ───────────── */
-
-  detectCurrentSelection() {
-    return Promise.resolve(
-      (clipboard.readText('selection') || '').trim()
-    );
   }
 }
 

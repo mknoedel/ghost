@@ -1,17 +1,146 @@
 const { spawn } = require('child_process');
-const { clipboard, screen } = require('electron');
+const { screen } = require('electron');
 
 class MacSelectionWatcher {
   constructor() {
     this.isWatching = false;
-    this.watchInterval = null;
+    this.checkInterval = null;
     this.lastSelection = '';
-    this.checkCount = 0;
+    this.callback = null;
+  }
+
+  async startWatching(callback) {
+    if (this.isWatching) {
+      console.log('[MacSelection] Already watching');
+      return true;
+    }
+
+    this.callback = callback;
+
+    console.log('[MacSelection] Checking accessibility permissions...');
+    const hasPermissions = await this.checkAccessibilityPermissions();
+    
+    if (!hasPermissions) {
+      console.log('[MacSelection] No accessibility permissions');
+      const userChoice = await this.requestPermissions();
+      
+      if (userChoice === 'manual') {
+        console.log('[MacSelection] User chose manual mode');
+        return false;
+      }
+      
+      // Check again after user setup
+      const hasPermissionsNow = await this.checkAccessibilityPermissions();
+      if (!hasPermissionsNow) {
+        console.log('[MacSelection] Still no permissions');
+        return false;
+      }
+    }
+
+    // Start checking for selections every 3 seconds
+    this.checkInterval = setInterval(() => this.checkForSelection(), 3000);
+    this.isWatching = true;
+    
+    console.log('[MacSelection] ✅ Started watching (checks every 3 seconds)');
+    return true;
+  }
+
+  stopWatching() {
+    if (!this.isWatching) return;
+
+    if (this.checkInterval) {
+      clearInterval(this.checkInterval);
+      this.checkInterval = null;
+    }
+    
+    this.isWatching = false;
+    this.callback = null;
+    this.lastSelection = '';
+    
+    console.log('[MacSelection] Stopped watching');
+  }
+
+  async checkForSelection() {
+    try {
+      console.log('[MacSelection] Checking for text selection...');
+      
+      const selectedText = await this.getSelectedText();
+      
+      if (selectedText && 
+          selectedText.length > 0 && 
+          selectedText !== this.lastSelection &&
+          selectedText.toLowerCase().includes('a')) {
+        
+        console.log(`[MacSelection] ✅ Found: "${selectedText.slice(0, 50)}${selectedText.length > 50 ? '...' : ''}"`);
+        
+        this.lastSelection = selectedText;
+        const cursor = screen.getCursorScreenPoint();
+        
+        if (this.callback) {
+          this.callback({
+            text: selectedText,
+            x: cursor.x,
+            y: cursor.y,
+            timestamp: Date.now()
+          });
+        }
+        
+      } else if (selectedText) {
+        console.log(`[MacSelection] Filtered: "${selectedText.slice(0, 30)}" (duplicate or no 'a')`);
+      } else {
+        console.log('[MacSelection] No selection found');
+      }
+      
+    } catch (error) {
+      console.log('[MacSelection] Check failed:', error.message);
+    }
+  }
+
+  async getSelectedText() {
+    return new Promise((resolve) => {
+      const script = `
+        try
+          set savedClip to the clipboard
+          
+          tell application "System Events"
+            key code 8 using command down
+          end tell
+          
+          delay 0.1
+          
+          set newClip to the clipboard
+          set the clipboard to savedClip
+          
+          if newClip is not equal to savedClip then
+            return newClip
+          else
+            return ""
+          end if
+        on error
+          return ""
+        end try
+      `;
+
+      const osascript = spawn('osascript', ['-e', script]);
+      let output = '';
+
+      osascript.stdout.on('data', (data) => {
+        output += data.toString();
+      });
+
+      osascript.on('close', () => {
+        const text = output.trim();
+        resolve(text || null);
+      });
+
+      osascript.on('error', () => {
+        resolve(null);
+      });
+    });
   }
 
   checkAccessibilityPermissions() {
     return new Promise((resolve) => {
-      // Simple accessibility check
       const script = `tell application "System Events" to get name of first process`;
       
       const osascript = spawn('osascript', ['-e', script]);
@@ -31,17 +160,12 @@ class MacSelectionWatcher {
     });
   }
 
-  async requestAccessibilityPermissions() {
-    const script = `display dialog "Ghost needs Accessibility permissions to detect text selection automatically.
+  async requestPermissions() {
+    const script = `display dialog "Ghost can detect text selections automatically with Accessibility permissions.
 
-1. Click 'Open System Preferences' below
-2. Click the lock icon and enter your password  
-3. Find 'Ghost' in the list and check the box
-4. Restart Ghost
+Choose your preferred mode:" buttons {"Manual Hotkey Only", "Grant Permissions"} default button "Grant Permissions"
 
-Or choose 'Manual Only' to use Cmd+Shift+G hotkey only." buttons {"Manual Only", "Open System Preferences"} default button "Open System Preferences"
-
-if button returned of result is "Open System Preferences" then
+if button returned of result is "Grant Permissions" then
   tell application "System Preferences"
     activate
     set current pane to pane "com.apple.preference.security"
@@ -68,174 +192,26 @@ end if`;
       });
     });
   }
-
-  async startWatching(callback) {
-    if (this.isWatching) return true;
-
-    console.log('[macOS] Checking accessibility permissions...');
-    
-    const hasPermissions = await this.checkAccessibilityPermissions();
-    console.log('[macOS] Has permissions:', hasPermissions);
-    
-    if (!hasPermissions) {
-      console.log('[macOS] Requesting permissions...');
-      const result = await this.requestAccessibilityPermissions();
-      
-      if (result === 'manual') {
-        console.log('[macOS] User chose manual mode');
-        return false;
-      }
-      
-      // Check again after user setup
-      const hasPermissionsNow = await this.checkAccessibilityPermissions();
-      if (!hasPermissionsNow) {
-        console.log('[macOS] Still no permissions, falling back to manual');
-        return false;
-      }
-    }
-
-    // Start the simple watcher
-    this.startSimpleWatcher(callback);
-    this.isWatching = true;
-    console.log('[macOS] Selection watcher started successfully');
-    return true;
-  }
-
-  startSimpleWatcher(callback) {
-    this.watchInterval = setInterval(async () => {
-      this.checkCount++;
-      
-      // Only check every 4th cycle (every ~3 seconds) to be respectful
-      if (this.checkCount % 4 !== 0) return;
-      
-      console.log(`[macOS] Checking for selection... (${this.checkCount})`);
-      
-      try {
-        const selectedText = await this.getSelection();
-        
-        if (selectedText && 
-            selectedText.length > 0 && 
-            selectedText !== this.lastSelection &&
-            selectedText.toLowerCase().includes('a')) {
-          
-          console.log(`[macOS] ✅ Selection detected: "${selectedText.slice(0, 50)}${selectedText.length > 50 ? '...' : ''}"`);
-          
-          this.lastSelection = selectedText;
-          const cursor = screen.getCursorScreenPoint();
-          
-          callback(selectedText, {
-            x: cursor.x,
-            y: cursor.y,
-            width: 0,
-            height: 0
-          });
-        } else if (selectedText) {
-          console.log(`[macOS] Selection found but filtered: "${selectedText.slice(0, 30)}" (no 'a' or duplicate)`);
-        } else {
-          // Don't reset lastSelection when no selection found - popup might have caused focus loss
-          console.log('[macOS] No selection detected (keeping last selection in memory)');
-        }
-      } catch (error) {
-        console.log('[macOS] Selection check error:', error.message);
-      }
-    }, 750); // Check every 750ms
-  }
-
-  async getSelection() {
-    return new Promise((resolve) => {
-      // Ultra-simple AppleScript - no app filtering, just try to get selection
-      const script = `
-        try
-          set savedClip to the clipboard
-          
-          tell application "System Events"
-            key code 8 using command down
-          end tell
-          
-          delay 0.1
-          
-          set newClip to the clipboard
-          set the clipboard to savedClip
-          
-          if newClip is not equal to savedClip then
-            return newClip
-          else
-            return ""
-          end if
-        on error e
-          return ""
-        end try
-      `;
-
-      console.log('[macOS] Running selection script...');
-      
-      const osascript = spawn('osascript', ['-e', script]);
-      let output = '';
-      let stderr = '';
-
-      osascript.stdout.on('data', (data) => {
-        output += data.toString();
-      });
-
-      osascript.stderr.on('data', (data) => {
-        stderr += data.toString();
-      });
-
-      osascript.on('close', (code) => {
-        console.log(`[macOS] Script finished (code: ${code})`);
-        console.log(`[macOS] Output: "${output.trim()}"`);
-        if (stderr) console.log(`[macOS] Errors: ${stderr.trim()}`);
-        
-        const text = output.trim();
-        resolve(text || null);
-      });
-
-      osascript.on('error', (err) => {
-        console.log('[macOS] Script spawn error:', err.message);
-        resolve(null);
-      });
-    });
-  }
-
-  stopWatching() {
-    if (this.watchInterval) {
-      clearInterval(this.watchInterval);
-      this.watchInterval = null;
-    }
-    
-    this.isWatching = false;
-    this.lastSelection = '';
-    this.checkCount = 0;
-    this.lastPopupTime = 0;
-    console.log('[macOS] Selection watcher stopped');
-  }
 }
 
-let watcherInstance = null;
+// Export simple interface
+let watcher = null;
 
 function startWatching(callback) {
-  if (!watcherInstance) {
-    watcherInstance = new MacSelectionWatcher();
+  if (!watcher) {
+    watcher = new MacSelectionWatcher();
   }
-  return watcherInstance.startWatching(callback);
+  return watcher.startWatching(callback);
 }
 
 function stopWatching() {
-  if (watcherInstance) {
-    watcherInstance.stopWatching();
-    watcherInstance = null;
+  if (watcher) {
+    watcher.stopWatching();
+    watcher = null;
   }
-}
-
-function checkAccessibilityPermissions() {
-  if (!watcherInstance) {
-    watcherInstance = new MacSelectionWatcher();
-  }
-  return watcherInstance.checkAccessibilityPermissions();
 }
 
 module.exports = {
   startWatching,
-  stopWatching,
-  checkAccessibilityPermissions
+  stopWatching
 };

@@ -89,19 +89,13 @@ function createPopupWindowImmediate(x, y, selectedText) {
     popupWindow.focus();
   });
 
-  // Auto-close after 5 seconds of inactivity
-  setTimeout(() => {
-    if (popupWindow && !popupWindow.isDestroyed()) {
-      popupWindow.close();
-    }
-  }, 5000);
-
-  popupWindow.on('blur', () => {
-    setTimeout(() => {
+  // Close popup when Escape key is pressed
+  popupWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.key === 'Escape' && input.type === 'keyDown') {
       if (popupWindow && !popupWindow.isDestroyed()) {
         popupWindow.close();
       }
-    }, 100);
+    }
   });
 }
 
