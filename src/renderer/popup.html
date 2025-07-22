@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Ghost Popup</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(10px);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .popup-container {
+            display: flex;
+            align-items: center;
+            padding: 8px;
+            gap: 6px;
+            overflow-x: auto;
+        }
+        #actionButtons {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+        .action-button {
+            background: rgba(255, 255, 255, 0.9);
+            border: none;
+            border-radius: 6px;
+            padding: 8px 12px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            color: #333;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .action-button:hover {
+            background: white;
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        }
+        .action-button:active {
+            transform: translateY(0);
+        }
+        .selected-text {
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: white;
+            font-size: 11px;
+            opacity: 0.8;
+            margin-right: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="popup-container">
+        <div class="selected-text" id="selectedText"></div>
+        <div id="actionButtons"></div>
+    </div>
+
+    <script>
+        const { ipcRenderer, shell } = require('electron');
+        const ActionRegistry = require('../actions/action-registry');
+        
+        let currentText = '';
+        let actionRegistry = new ActionRegistry();
+
+        function createActionButton(action) {
+            const button = document.createElement('button');
+            button.className = 'action-button';
+            button.innerHTML = `${action.icon} ${action.label}`;
+            button.onclick = () => executeAction(action.id);
+            return button;
+        }
+
+        function renderActions() {
+            const container = document.getElementById('actionButtons');
+            container.innerHTML = '';
+            
+            const actions = actionRegistry.getActions();
+            actions.forEach(action => {
+                const button = createActionButton(action);
+                container.appendChild(button);
+            });
+        }
+
+        async function executeAction(actionId) {
+            try {
+                const context = { ipcRenderer, shell };
+                const result = await actionRegistry.executeAction(actionId, currentText, context);
+                
+                if (result.success) {
+                    closePopup();
+                } else {
+                    console.error('Action failed:', result.message);
+                }
+            } catch (error) {
+                console.error('Error executing action:', error);
+            }
+        }
+
+        ipcRenderer.on('selected-text', (event, text) => {
+            currentText = text;
+            document.getElementById('selectedText').textContent = 
+                text.length > 30 ? text.substring(0, 30) + '...' : text;
+            renderActions();
+        });
+
+        async function closePopup() {
+            await ipcRenderer.invoke('close-popup');
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                closePopup();
+            }
+        });
+
+        // Initialize actions on load
+        renderActions();
+    </script>
+</body>
+</html>

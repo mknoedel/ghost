@@ -1,0 +1,43 @@
+{
+  "name": "ghost",
+  "version": "0.1.0",
+  "description": "Cross-platform text selection popup tool inspired by PopClip",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder",
+    "lint": "eslint src/",
+    "test": "jest"
+  },
+  "keywords": [
+    "text-selection",
+    "productivity",
+    "cross-platform",
+    "popup"
+  ],
+  "author": "Ghost Team",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^27.0.0",
+    "electron-builder": "^24.6.4",
+    "electron-rebuild": "^3.2.9",
+    "eslint": "^8.52.0",
+    "jest": "^29.7.0"
+  },
+  "build": {
+    "appId": "com.ghost.textselection",
+    "productName": "Ghost",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ]
+  },
+  "dependencies": {
+    "@nut-tree-fork/nut-js": "^4.2.6"
+  }
+}

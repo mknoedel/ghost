@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Ghost - Text Selection Tool</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            margin: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        h1 {
+            margin: 0 0 20px 0;
+            color: #333;
+        }
+        .status {
+            padding: 10px;
+            background: #e8f5e8;
+            border-radius: 4px;
+            color: #2d5a2d;
+            margin-bottom: 15px;
+        }
+        .shortcut {
+            font-family: monospace;
+            background: #f0f0f0;
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>👻 Ghost</h1>
+        <div class="status">
+            Ghost is running in the background.
+        </div>
+        <p>
+            Select any text containing the letter "a" to automatically open the Ghost popup with quick actions.
+            Alternatively, press <span class="shortcut">Cmd+Shift+G</span> 
+            (or <span class="shortcut">Ctrl+Shift+G</span> on Windows/Linux) 
+            to manually trigger the popup for any selected text.
+        </p>
+        <p><strong>Available Actions:</strong></p>
+        <ul>
+            <li>Copy text to clipboard</li>
+            <li>Search on Google</li>
+            <li>Translate text</li>
+            <li>More actions coming soon...</li>
+        </ul>
+    </div>
+</body>
+</html>

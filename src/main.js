@@ -1,0 +1,129 @@
+const { app, BrowserWindow, globalShortcut, clipboard, ipcMain } = require('electron');
+const path = require('path');
+const SelectionMonitor = require('./selection-monitor');
+
+let mainWindow;
+let popupWindow;
+let selectionMonitor;
+
+function createMainWindow() {
+  mainWindow = new BrowserWindow({
+    width: 400,
+    height: 300,
+    show: false,
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false
+    }
+  });
+
+  mainWindow.loadFile(path.join(__dirname, 'renderer', 'main.html'));
+  
+  if (process.argv.includes('--dev')) {
+    mainWindow.webContents.openDevTools();
+    mainWindow.show();
+  }
+}
+
+function createPopupWindow(x, y, selectedText) {
+  if (popupWindow && !popupWindow.isDestroyed()) {
+    popupWindow.close();
+  }
+
+  // Ensure popup stays within screen bounds
+  const { screen } = require('electron');
+  const display = screen.getDisplayNearestPoint({ x, y });
+  const bounds = display.workArea;
+  
+  const popupWidth = 400;
+  const popupHeight = 60;
+  
+  let popupX = Math.max(bounds.x, Math.min(x - popupWidth / 2, bounds.x + bounds.width - popupWidth));
+  let popupY = Math.max(bounds.y, y - 80);
+
+  popupWindow = new BrowserWindow({
+    width: popupWidth,
+    height: popupHeight,
+    x: popupX,
+    y: popupY,
+    frame: false,
+    alwaysOnTop: true,
+    resizable: false,
+    movable: false,
+    skipTaskbar: true,
+    transparent: true,
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false
+    }
+  });
+
+  popupWindow.loadFile(path.join(__dirname, 'renderer', 'popup.html'));
+  
+  popupWindow.once('ready-to-show', () => {
+    popupWindow.webContents.send('selected-text', selectedText);
+    popupWindow.show();
+    popupWindow.focus();
+  });
+
+  // Auto-close after 5 seconds of inactivity
+  setTimeout(() => {
+    if (popupWindow && !popupWindow.isDestroyed()) {
+      popupWindow.close();
+    }
+  }, 5000);
+
+  popupWindow.on('blur', () => {
+    setTimeout(() => {
+      if (popupWindow && !popupWindow.isDestroyed()) {
+        popupWindow.close();
+      }
+    }, 100);
+  });
+}
+
+function handleTextSelection(selectionData) {
+  if (selectionData && selectionData.text && selectionData.text.trim().length > 0) {
+    createPopupWindow(selectionData.x, selectionData.y, selectionData.text);
+  }
+}
+
+app.whenReady().then(() => {
+  createMainWindow();
+
+  // Initialize selection monitor
+  selectionMonitor = new SelectionMonitor(handleTextSelection);
+  selectionMonitor.start();
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createMainWindow();
+  }
+});
+
+app.on('before-quit', () => {
+  if (selectionMonitor) {
+    selectionMonitor.stop();
+  }
+});
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
+});
+
+ipcMain.handle('copy-text', (event, text) => {
+  clipboard.writeText(text);
+});
+
+ipcMain.handle('close-popup', () => {
+  if (popupWindow && !popupWindow.isDestroyed()) {
+    popupWindow.close();
+  }
+});
