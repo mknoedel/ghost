@@ -66,8 +66,7 @@ A cross-platform text selection popup tool inspired by PopClip, featuring native
 The project structure:
 - `src/main.js` - Electron main process and popup management
 - `src/selection-monitor.js` - Unified selection monitoring with native watchers
-- `src/native/mac-selection.js` - macOS Accessibility API integration
-- `src/native/win-selection.js` - Windows UIAutomation integration
+- `src/mac-selection.js` - macOS Accessibility API integration
 - `src/renderer/` - UI components and styles
 - `package.json` - Dependencies and build configuration
 

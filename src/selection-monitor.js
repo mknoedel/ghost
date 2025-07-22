@@ -3,7 +3,7 @@ const nut = require('@nut-tree-fork/nut-js');
 const { keyboard: nutKeyboard, Key: nutKey } = nut;
 
 // Only macOS selection monitoring
-const macSelection = require('./native/mac-selection');
+const macSelection = require('./mac-selection');
 
 class SelectionMonitor {
   constructor(onSelectionCallback) {
