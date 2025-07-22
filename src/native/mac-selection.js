@@ -132,7 +132,8 @@ end if`;
         } else if (selectedText) {
           console.log(`[macOS] Selection found but filtered: "${selectedText.slice(0, 30)}" (no 'a' or duplicate)`);
         } else {
-          console.log('[macOS] No selection detected');
+          // Don't reset lastSelection when no selection found - popup might have caused focus loss
+          console.log('[macOS] No selection detected (keeping last selection in memory)');
         }
       } catch (error) {
         console.log('[macOS] Selection check error:', error.message);
@@ -205,6 +206,7 @@ end if`;
     this.isWatching = false;
     this.lastSelection = '';
     this.checkCount = 0;
+    this.lastPopupTime = 0;
     console.log('[macOS] Selection watcher stopped');
   }
 }
