@@ -25,7 +25,29 @@ function createMainWindow() {
   }
 }
 
+let lastPopupBounds = null;
+let popupDebounceTimer = null;
+
 function createPopupWindow(x, y, selectedText) {
+  // Debounce popup creation to prevent jitter
+  if (popupDebounceTimer) {
+    clearTimeout(popupDebounceTimer);
+  }
+  
+  const currentBounds = `${Math.round(x/10)*10},${Math.round(y/10)*10}`;
+  
+  // Skip if this is a duplicate position within debounce window
+  if (lastPopupBounds === currentBounds) {
+    return;
+  }
+  
+  popupDebounceTimer = setTimeout(() => {
+    createPopupWindowImmediate(x, y, selectedText);
+    lastPopupBounds = currentBounds;
+  }, 100); // 100ms debounce for popup creation
+}
+
+function createPopupWindowImmediate(x, y, selectedText) {
   if (popupWindow && !popupWindow.isDestroyed()) {
     popupWindow.close();
   }
@@ -38,8 +60,9 @@ function createPopupWindow(x, y, selectedText) {
   const popupWidth = 400;
   const popupHeight = 60;
   
+  // Position popup near selection instead of using arbitrary offset
   let popupX = Math.max(bounds.x, Math.min(x - popupWidth / 2, bounds.x + bounds.width - popupWidth));
-  let popupY = Math.max(bounds.y, y - 80);
+  let popupY = Math.max(bounds.y, y - popupHeight - 10); // Small gap above selection
 
   popupWindow = new BrowserWindow({
     width: popupWidth,
@@ -109,6 +132,9 @@ app.on('activate', () => {
 });
 
 app.on('before-quit', () => {
+  if (popupDebounceTimer) {
+    clearTimeout(popupDebounceTimer);
+  }
   if (selectionMonitor) {
     selectionMonitor.stop();
   }

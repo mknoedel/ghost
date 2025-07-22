@@ -2,33 +2,133 @@ const { clipboard, screen, globalShortcut } = require('electron');
 const nut = require('@nut-tree-fork/nut-js');
 const { keyboard: nutKeyboard, Key: nutKey } = nut;
 
+// Platform-specific native watchers
+let nativeWatcher = null;
+try {
+  if (process.platform === 'darwin') {
+    nativeWatcher = require('./native/mac-selection');
+  } else if (process.platform === 'win32') {
+    nativeWatcher = require('./native/win-selection');
+  } else if (process.platform === 'linux') {
+    nativeWatcher = require('./native/linux-selection');
+  }
+} catch (error) {
+  console.warn('Native selection watcher not available:', error.message);
+}
+
 class SelectionMonitor {
   constructor(onSelectionCallback, pollMs = 150) {
     this.onSelection = onSelectionCallback;
     this.pollMs = pollMs;
     this.lastSelection = null;
     this.timer = null;
+    this.usingNativeWatcher = false;
+    this.lastBounds = null;
+    this.debounceTimer = null;
+    this.lastSelectionKey = null;
   }
 
   /* ───────────── lifecycle ───────────── */
 
   start() {
-    if (this.timer) return;                          // already running
-    this.timer = setInterval(() => this.check(), this.pollMs);
+    if (this.timer || this.usingNativeWatcher) return; // already running
 
-    // manual fallback: user hits ⌘/Ctrl‑Shift‑G → we copy, inspect, restore
+    // Try to start native watcher first
+    if (nativeWatcher && this.tryStartNativeWatcher()) {
+      this.usingNativeWatcher = true;
+      console.log(`Selection monitor started using native watcher (${process.platform})`);
+    } else {
+      // Fallback strategies per platform
+      if (process.platform === 'linux') {
+        // On Linux, still try polling as final fallback
+        this.timer = setInterval(() => this.check(), this.pollMs);
+        console.log('Selection monitor started using clipboard polling (Linux fallback)');
+      } else {
+        console.log('Selection monitor started in manual trigger mode only');
+      }
+    }
+
+    // Register manual fallback for all platforms
     globalShortcut.register('CommandOrControl+Shift+G', () =>
       this.handleManualTrigger()
     );
-    console.log('Selection monitor started');
   }
 
   stop() {
-    if (!this.timer) return;
-    clearInterval(this.timer);
-    this.timer = null;
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    
+    if (this.usingNativeWatcher && nativeWatcher) {
+      try {
+        nativeWatcher.stopWatching();
+      } catch (error) {
+        console.error('Error stopping native watcher:', error);
+      }
+      this.usingNativeWatcher = false;
+    }
+    
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    
     globalShortcut.unregister('CommandOrControl+Shift+G');
     console.log('Selection monitor stopped');
+  }
+
+  /* ───────────── native watcher ───────────── */
+
+  tryStartNativeWatcher() {
+    try {
+      return nativeWatcher.startWatching((text, bounds) => {
+        this.handleNativeSelection(text, bounds);
+      });
+    } catch (error) {
+      console.error('Failed to start native watcher:', error);
+      return false;
+    }
+  }
+
+  handleNativeSelection(text, bounds) {
+    if (!text || text.trim().length === 0) return;
+    
+    // Check if text contains 'a' (case insensitive)
+    if (!text.toLowerCase().includes('a')) return;
+    
+    // Debounce rapid selections to prevent jitter
+    this.debouncedFireCallback(text, bounds);
+  }
+
+  debouncedFireCallback(text, bounds) {
+    // Clear existing debounce timer
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+    }
+    
+    // Check if this is a duplicate of recent selection
+    const boundsKey = bounds ? `${Math.round(bounds.x/10)*10},${Math.round(bounds.y/10)*10}` : 'unknown';
+    const selectionKey = `${text.slice(0, 50)}_${boundsKey}`;
+    
+    if (this.lastSelectionKey === selectionKey) {
+      return; // Skip duplicate
+    }
+    
+    this.debounceTimer = setTimeout(() => {
+      this.lastSelectionKey = selectionKey;
+      this.lastSelection = text;
+      this.lastBounds = bounds;
+      
+      if (typeof this.onSelection === 'function') {
+        this.onSelection({ 
+          text, 
+          x: bounds ? bounds.x : screen.getCursorScreenPoint().x,
+          y: bounds ? bounds.y : screen.getCursorScreenPoint().y,
+          timestamp: Date.now() 
+        });
+      }
+    }, 250); // 250ms debounce
   }
 
   /* ───────────── passive poll ───────────── */
