@@ -37,7 +37,7 @@ class MacSelectionWatcher {
       }
     }
 
-    this.checkInterval = setInterval(() => this.checkForSelection(), 3000);
+    this.checkInterval = setInterval(() => this.checkForSelection(), 2000);
     this.isWatching = true;
     this.logger.success('Started watching (3s interval)');
     return true;
@@ -58,14 +58,22 @@ class MacSelectionWatcher {
   async checkForSelection() {
     try {
       const text = await this.getSelectedText();
-      if (
-        isValidSelection(text) &&
-        text !== this.lastSelection
-      ) {
-        this.lastSelection = text;
-        const { x, y } = screen.getCursorScreenPoint();
-        this.callback?.({ text, x, y, timestamp: Date.now() });
-        this.logger.success(`"${text.slice(0, 50)}"`);
+      
+      // Always hide popup on any selection change, even invalid ones
+      if (text !== this.lastSelection) {
+        // First, hide any existing popup
+        this.callback?.({ hideOnly: true });
+        
+        // Then, only create a new popup if the selection is valid
+        if (isValidSelection(text)) {
+          this.lastSelection = text;
+          const { x, y } = screen.getCursorScreenPoint();
+          this.callback?.({ text, x, y, timestamp: Date.now() });
+          this.logger.success(`"${text.slice(0, 50)}"`);
+        } else {
+          // Update lastSelection even for invalid selections to prevent repeated hide calls
+          this.lastSelection = text;
+        }
       }
     } catch (err) {
       this.logger.error('Error:', err.message);

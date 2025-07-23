@@ -44,13 +44,25 @@ function createPopupWindow(x, y, selectedText) {
   popupDebounceTimer = setTimeout(() => {
     createPopupWindowImmediate(x, y, selectedText);
     lastPopupBounds = currentBounds;
-  }, 100); // 100ms debounce for popup creation
+  }, 10); // 100ms debounce for popup creation
 }
 
-function createPopupWindowImmediate(x, y, selectedText) {
+function hidePopupWindow() {
   if (popupWindow && !popupWindow.isDestroyed()) {
     popupWindow.close();
   }
+  
+  // Reset debounce timer and last bounds
+  if (popupDebounceTimer) {
+    clearTimeout(popupDebounceTimer);
+    popupDebounceTimer = null;
+  }
+  lastPopupBounds = null;
+}
+
+function createPopupWindowImmediate(x, y, selectedText) {
+  // Use the dedicated function to hide any existing popup
+  hidePopupWindow();
 
   // Ensure popup stays within screen bounds
   const { screen } = require('electron');
@@ -117,6 +129,13 @@ function createPopupWindowImmediate(x, y, selectedText) {
 }
 
 function handleTextSelection(selectionData) {
+  // Check if we should just hide the popup
+  if (selectionData && selectionData.hideOnly) {
+    hidePopupWindow();
+    return;
+  }
+  
+  // Otherwise, create a new popup if we have valid text
   if (selectionData && selectionData.text && selectionData.text.trim().length > 0) {
     createPopupWindow(selectionData.x, selectionData.y, selectionData.text);
   }
