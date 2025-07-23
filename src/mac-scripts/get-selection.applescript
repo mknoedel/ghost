@@ -55,13 +55,35 @@ try
     ----------------------------------------------------------------
     my logIt("fallback -> Command‑C")
 
-    set savedClip to the clipboard
+    set sentinel to do shell script "uuidgen" -- random value unlikely to collide
+
+    -- cache original clipboard (may be binary)
+    set origClip to (do shell script "pbpaste | base64")
+
+    -- set clipboard to sentinel
+    do shell script "printf " & quoted form of sentinel & " | pbcopy"
+
+    -- try to copy
     tell application "System Events" to keystroke "c" using command down
-    delay 0.20
-    set newClip to the clipboard
-    set the clipboard to savedClip
-    my logIt("newClip len: " & (length of newClip))
-    return newClip
+
+    -- wait up to 1 s for pasteboard change
+    set newClipboard to ""
+    repeat 20 times -- 20 × 0.05 s = 1 s
+        delay 0.05
+        set newClipboard to (do shell script "pbpaste")
+        if newClipboard is not equal to sentinel then exit repeat
+    end repeat
+
+    -- restore original clipboard (even if we timed out)
+    do shell script "echo " & quoted form of origClip & " | base64 -D | pbcopy"
+
+    if newClipboard is equal to sentinel or newClipboard is "" then
+        my logIt("No new text found in clipboard")
+        return ""
+    else
+        my logIt("newClip len: " & (length of newClipboard))
+        return newClipboard
+    end if
 
 on error e number n
     my logIt("ERROR " & n & ": " & e)
