@@ -1,65 +1,70 @@
-const liveSel = require('./mac-live-selection')
 const { globalShortcut } = require('electron');
 const nut = require('@nut-tree-fork/nut-js');
 const { keyboard: nutKeyboard, Key: nutKey } = nut;
-
-// Only macOS selection monitoring
-const macSelection = require('./mac-selection');
+const { StrategyManager } = require('./selection-strategies');
+const Logger = require('./logger');
 
 class SelectionMonitor {
   constructor(onSelectionCallback) {
     this.onSelection = onSelectionCallback;
     this.isRunning = false;
+    this.logger = new Logger('SelectionMonitor');
+    this.strategyManager = new StrategyManager();
   }
 
-  start() {
+  async start() {
     if (this.isRunning) {
-      console.log('[SelectionMonitor] Already running');
+      this.logger.info('Already running');
       return;
     }
 
-    console.log('[SelectionMonitor] Starting...');
+    this.logger.info('Starting...');
 
-    // Only try macOS selection monitoring
-    if (process.platform === 'darwin') {
-      console.log('[SelectionMonitor] Starting macOS polling fallback due to binary issues...');
-      macSelection.startWatching(this.onSelection);
+    // Try to start selection monitoring strategies
+    const success = await this.strategyManager.start(this.onSelection);
+    if (success) {
       this.isRunning = true;
+      this.logger.success(`Started with ${this.strategyManager.getActiveStrategy()} strategy`);
     } else {
-      console.log(`[SelectionMonitor] Platform ${process.platform} not supported, manual mode only`);
+      this.logger.warn('No strategies available, manual mode only');
     }
 
     // Always register manual trigger hotkey as fallback
-    globalShortcut.register('CommandOrControl+Shift+G', () => {
-      console.log('[SelectionMonitor] Manual trigger activated');
-      this.handleManualTrigger();
-    });
-
-    console.log('[SelectionMonitor] Manual hotkey (Cmd/Ctrl+Shift+G) registered');
+    this.registerManualTrigger();
   }
 
   stop() {
     if (!this.isRunning) return;
 
-    console.log('[SelectionMonitor] Stopping...');
+    this.logger.info('Stopping...');
 
-    // Stop macOS watcher if running
-    if (process.platform === 'darwin') {
-      liveSel.stopLiveWatcher();
-      macSelection.stopWatching();
-    }
+    // Stop strategy manager
+    this.strategyManager.stop();
 
     // Unregister hotkey
     globalShortcut.unregister('CommandOrControl+Shift+G');
     
     this.isRunning = false;
-    console.log('[SelectionMonitor] Stopped');
+    this.logger.info('Stopped');
+  }
+
+  registerManualTrigger() {
+    try {
+      globalShortcut.register('CommandOrControl+Shift+G', () => {
+        this.logger.debug('Manual trigger activated');
+        this.handleManualTrigger();
+      });
+      this.logger.success('Manual hotkey (Cmd/Ctrl+Shift+G) registered');
+    } catch (error) {
+      this.logger.error('Failed to register manual trigger:', error.message);
+    }
   }
 
   async handleManualTrigger() {
     try {
-      // Get current clipboard content to restore later
-      const { clipboard } = require('electron');
+      const { clipboard, screen } = require('electron');
+      
+      // Preserve original clipboard
       const originalClipboard = clipboard.readText();
 
       // Send copy command
@@ -70,19 +75,16 @@ class SelectionMonitor {
       // Wait for clipboard to update
       await new Promise(resolve => setTimeout(resolve, 120));
 
-      // Get copied text
       const copiedText = clipboard.readText() || '';
-
+      
       // Restore original clipboard
       clipboard.writeText(originalClipboard);
 
-      // Check if we got valid text with 'a'
-      if (copiedText.trim().length > 0 && copiedText.toLowerCase().includes('a')) {
-        console.log(`[SelectionMonitor] Manual trigger: "${copiedText.slice(0, 30)}${copiedText.length > 30 ? '...' : ''}"`);
+      // Validate copied text
+      if (this.isValidSelection(copiedText)) {
+        this.logger.debug(`Manual trigger text: "${copiedText.slice(0, 30)}${copiedText.length > 30 ? '...' : ''}"`);
         
-        const { screen } = require('electron');
         const cursor = screen.getCursorScreenPoint();
-        
         this.onSelection({
           text: copiedText,
           x: cursor.x,
@@ -90,12 +92,18 @@ class SelectionMonitor {
           timestamp: Date.now()
         });
       } else {
-        console.log(`[SelectionMonitor] Manual trigger: no valid text (${copiedText.length} chars, contains 'a': ${copiedText.toLowerCase().includes('a')})`);
+        this.logger.debug(`Manual trigger: invalid text (${copiedText.length} chars, contains 'a': ${copiedText.toLowerCase().includes('a')})`);
       }
 
     } catch (error) {
-      console.error('[SelectionMonitor] Manual trigger failed:', error);
+      this.logger.error('Manual trigger failed:', error.message);
     }
+  }
+
+  isValidSelection(text) {
+    return text && 
+           text.trim().length > 0 && 
+           text.toLowerCase().includes('a');
   }
 }
 

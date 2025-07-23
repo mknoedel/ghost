@@ -12,20 +12,40 @@ import Cocoa
 // ---------------------------------------------------------------------------
 
 func focusedElement() -> AXUIElement? {
-    let sys = AXUIElementCreateSystemWide()
+    // Use frontmost app instead of system-wide (more reliable)
+    guard let frontApp = NSWorkspace.shared.frontmostApplication else {
+        fputs("LiveSel helper: no frontmost app\n", stderr)
+        return nil
+    }
+    
+    let appElement = AXUIElementCreateApplication(frontApp.processIdentifier)
     var val: AnyObject?
-    return AXUIElementCopyAttributeValue(sys,
-                                         kAXFocusedUIElementAttribute as CFString,
-                                         &val) == .success
-           ? (val as! AXUIElement) : nil
+    let result = AXUIElementCopyAttributeValue(appElement,
+                                              kAXFocusedUIElementAttribute as CFString,
+                                              &val)
+    if result == .success {
+        return val as! AXUIElement
+    } else {
+        fputs("LiveSel helper: failed to get focused element from \(frontApp.localizedName ?? "unknown") (error: \(result.rawValue))\n", stderr)
+        return nil
+    }
 }
 
 func selectedText(_ elem: AXUIElement) -> String? {
     var v: AnyObject?
-    if AXUIElementCopyAttributeValue(elem,
-                                     kAXSelectedTextAttribute as CFString,
-                                     &v) == .success,
-       let s = v as? String, !s.isEmpty { return s }
+    let result = AXUIElementCopyAttributeValue(elem,
+                                              kAXSelectedTextAttribute as CFString,
+                                              &v)
+    if result == .success {
+        if let s = v as? String, !s.isEmpty {
+            fputs("LiveSel helper: found selected text: '\(s.prefix(50))'\n", stderr)
+            return s
+        } else {
+            fputs("LiveSel helper: selected text attribute exists but is empty\n", stderr)
+        }
+    } else {
+        fputs("LiveSel helper: no selected text attribute (error: \(result.rawValue))\n", stderr)
+    }
     return nil
 }
 
@@ -124,7 +144,7 @@ if let f0 = focusedElement() {
     fputs("LiveSel helper: using polling for focus changes\n", stderr)
     var last: AXUIElement?
 
-    let timer = Timer(timeInterval: 0.20, repeats: true) { _ in
+    let timer = Timer(timeInterval: 0.50, repeats: true) { _ in  // Slower polling to reduce log spam
         if let cur = focusedElement() {
             // Use CFEqual to properly compare AXUIElement objects
             let changed = (last == nil) || !CFEqual(cur, last)

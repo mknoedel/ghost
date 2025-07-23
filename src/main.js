@@ -105,12 +105,12 @@ function handleTextSelection(selectionData) {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   createMainWindow();
 
   // Initialize selection monitor
   selectionMonitor = new SelectionMonitor(handleTextSelection);
-  selectionMonitor.start();
+  await selectionMonitor.start();
 });
 
 app.on('window-all-closed', () => {

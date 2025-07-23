@@ -1,6 +1,7 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const { screen } = require('electron');
+const Logger = require('./logger');
 
 const SCRIPTS_DIR = path.join(__dirname, 'mac-scripts');
 
@@ -10,33 +11,34 @@ class MacSelectionWatcher {
     this.checkInterval = null;
     this.lastSelection = '';
     this.callback = null;
+    this.logger = new Logger('MacSelection');
   }
 
   /* ---------- public API ---------- */
 
   async startWatching(callback) {
     if (this.isWatching) {
-      console.log('[MacSelection] Already watching');
+      this.logger.info('Already watching');
       return true;
     }
 
     this.callback = callback;
-    console.log('[MacSelection] Checking AX permissions…');
+    this.logger.step('Checking accessibility permissions...');
 
     const hasPermissions = await this.checkAccessibilityPermissions();
     if (!hasPermissions) {
-      console.log('[MacSelection] ❌ No AX permissions');
+      this.logger.fail('No accessibility permissions');
       const choice = await this.requestPermissions();
       if (choice === 'manual') return false;
       if (!(await this.checkAccessibilityPermissions())) {
-        console.log('[MacSelection] ❌ Still not granted');
+        this.logger.fail('Permissions still not granted');
         return false;
       }
     }
 
     this.checkInterval = setInterval(() => this.checkForSelection(), 3000);
     this.isWatching = true;
-    console.log('[MacSelection] ✅ Started watching (3 s interval)');
+    this.logger.success('Started watching (3s interval)');
     return true;
   }
 
