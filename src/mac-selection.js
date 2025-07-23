@@ -72,13 +72,13 @@ class MacSelectionWatcher {
     }
   }
 
-  /* --- NEW ---  Runs external script instead of inline blob */
+  /* Runs external script instead of inline blob */
   async getSelectedText() {
     const scriptPath = path.join(SCRIPTS_DIR, 'get-selection.applescript');
     return this.runOsa(scriptPath);
   }
 
-  /* --- NEW ---  Proper AX trust check */
+  /*  Proper AX trust check */
   async checkAccessibilityPermissions() {
     const scriptPath = path.join(SCRIPTS_DIR, 'check-ax-trusted.applescript');
     const result = await this.runOsa(scriptPath);

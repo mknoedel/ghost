@@ -1,10 +1,6 @@
-const { globalShortcut } = require('electron');
-const nut = require('@nut-tree-fork/nut-js');
-const { keyboard: nutKeyboard, Key: nutKey } = nut;
 const liveSel = require('./mac-live-selection');
 const macSelection = require('./mac-selection');
 const Logger = require('./logger');
-const { isValidSelection } = require('./selection-utils');
 
 class SelectionMonitor {
   constructor(onSelectionCallback) {
@@ -42,8 +38,7 @@ class SelectionMonitor {
       }
     }
 
-    // Always register manual trigger hotkey
-    this.registerManualTrigger();
+    // Manual trigger removed
   }
 
   stop() {
@@ -63,8 +58,7 @@ class SelectionMonitor {
       this.appleScriptActive = false;
     }
 
-    // Unregister hotkey
-    globalShortcut.unregister('CommandOrControl+Shift+G');
+    // Manual trigger removed
     
     // Reset fallback state
     this.fallbackStarted = false;
@@ -74,57 +68,7 @@ class SelectionMonitor {
     this.logger.info('Stopped');
   }
 
-  registerManualTrigger() {
-    try {
-      globalShortcut.register('CommandOrControl+Shift+G', () => {
-        this.logger.debug('Manual trigger activated');
-        this.handleManualTrigger();
-      });
-      this.logger.success('Manual hotkey (Cmd/Ctrl+Shift+G) registered');
-    } catch (error) {
-      this.logger.error('Failed to register manual trigger:', error.message);
-    }
-  }
-
-  async handleManualTrigger() {
-    try {
-      const { clipboard, screen } = require('electron');
-      
-      // Preserve original clipboard
-      const originalClipboard = clipboard.readText();
-
-      // Send copy command
-      const mod = process.platform === 'darwin' ? nutKey.LeftMeta : nutKey.LeftControl;
-      await nutKeyboard.pressKey(mod, nutKey.C);
-      await nutKeyboard.releaseKey(mod, nutKey.C);
-
-      // Wait for clipboard to update
-      await new Promise(resolve => setTimeout(resolve, 120));
-
-      const copiedText = clipboard.readText() || '';
-      
-      // Restore original clipboard
-      clipboard.writeText(originalClipboard);
-
-      // Validate copied text
-      if (isValidSelection(copiedText)) {
-        this.logger.debug(`Manual trigger text: "${copiedText.slice(0, 30)}${copiedText.length > 30 ? '...' : ''}"`);
-        
-        const cursor = screen.getCursorScreenPoint();
-        this.onSelection({
-          text: copiedText,
-          x: cursor.x,
-          y: cursor.y,
-          timestamp: Date.now()
-        });
-      } else {
-        this.logger.debug(`Manual trigger: invalid text (${copiedText.length} chars, contains 'a': ${copiedText.toLowerCase().includes('a')})`);
-      }
-
-    } catch (error) {
-      this.logger.error('Manual trigger failed:', error.message);
-    }
-  }
+  // Manual trigger functionality removed
 
   async startSwiftBinary() {
     try {
