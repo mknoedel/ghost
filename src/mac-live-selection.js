@@ -1,6 +1,8 @@
 const { spawn } = require('child_process');
 const path = require('path');
+const Logger = require('./logger');
 
+const logger = new Logger('LiveSelection');
 let child = null;
 
 function startLiveWatcher(cb, statusCb) {
@@ -25,10 +27,10 @@ function startLiveWatcher(cb, statusCb) {
           // Handle status messages for fallback detection
           if (data.status) {
             if (data.status === 'isolated' || data.status === 'fallback_needed') {
-              console.error('[LiveSel helper] Status:', data.status, data.message || '');
+              logger.debug(`Status: ${data.status}${data.message ? ' - ' + data.message : ''}`);
               if (statusCb) statusCb(data);
             } else if (data.status === 'clipboard_fallback') {
-              console.error('[LiveSel helper] Using clipboard fallback');
+              logger.debug('Using clipboard fallback');
               if (statusCb) statusCb(data);
             }
           }
@@ -45,7 +47,7 @@ function startLiveWatcher(cb, statusCb) {
       });
       
       child.on('close', (code) => { 
-        console.error('[LiveSel helper] Process closed with code:', code);
+        logger.warn(`Process closed with code: ${code}`);
         child = null;
         if (!resolved) {
           resolved = true;
@@ -54,7 +56,7 @@ function startLiveWatcher(cb, statusCb) {
       });
       
       child.on('error', (err) => {
-        console.error('[LiveSel helper] Process error:', err.message);
+        logger.error('Process error:', err.message);
         child = null;
         if (!resolved) {
           resolved = true;
@@ -66,14 +68,14 @@ function startLiveWatcher(cb, statusCb) {
       // So we consider it successful if it starts without immediate errors
       setTimeout(() => {
         if (!resolved && child) {
-          console.error('[LiveSel helper] Binary started - waiting for user text selections');
+          logger.info('Binary started - waiting for user text selections');
           resolved = true;
           resolve(true); // Consider it successful if process is running
         }
       }, 1000);
 
     } catch (err) {
-      console.error('[LiveSel helper] Failed to start:', err.message);
+      logger.error('Failed to start:', err.message);
       resolve(false);
     }
   });

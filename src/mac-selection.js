@@ -50,7 +50,7 @@ class MacSelectionWatcher {
     this.isWatching = false;
     this.callback = null;
     this.lastSelection = '';
-    console.log('[MacSelection] Stopped watching');
+    this.logger.info('Stopped watching');
   }
 
   /* ---------- internals ---------- */
@@ -65,10 +65,10 @@ class MacSelectionWatcher {
         this.lastSelection = text;
         const { x, y } = screen.getCursorScreenPoint();
         this.callback?.({ text, x, y, timestamp: Date.now() });
-        console.log(`[MacSelection] ✅ "${text.slice(0, 50)}"`);
+        this.logger.success(`"${text.slice(0, 50)}"`);
       }
     } catch (err) {
-      console.log('[MacSelection] Error:', err.message);
+      this.logger.error('Error:', err.message);
     }
   }
 
@@ -97,13 +97,13 @@ class MacSelectionWatcher {
       proc.stderr.on('data', (d) => (err += d));
   
       proc.on('close', (code) => {
-        if (err) console.log('[MacSelection][osascript stderr] ' + err.trim());
-        if (code !== 0) console.log('[MacSelection] osascript exit code', code);
+        if (err) this.logger.debug('[osascript stderr] ' + err.trim());
+        if (code !== 0) this.logger.warn('osascript exit code', code);
         resolve(out.trim());
       });
   
       proc.on('error', (e) => {
-        console.log('[MacSelection] spawn error:', e.message);
+        this.logger.error('spawn error:', e.message);
         resolve('');
       });
     });

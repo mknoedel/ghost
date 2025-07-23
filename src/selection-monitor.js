@@ -135,7 +135,7 @@ class SelectionMonitor {
           
           // Cache this app as restricted
           this.restrictedApps.add(appName);
-          this.logger.warn(`Swift binary limitation detected for ${appName}, starting AppleScript fallback...`);
+          this.logger.debug(`Swift binary limitation detected for ${appName}, starting AppleScript fallback...`);
           
           // Start AppleScript fallback if not already running
           if (!this.appleScriptActive && !this.fallbackStarted) {

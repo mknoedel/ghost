@@ -11,10 +11,114 @@ import Cocoa
 
 // MARK: – util logging ------------------------------------------------------
 
+enum LogLevel: Int {
+    case error = 0
+    case warn = 1
+    case info = 2
+    case debug = 3
+}
+
+// Set the current log level - only messages at this level or lower will be logged
+// For production, set to .error to only log errors
+private let currentLogLevel: LogLevel = .error
+
+// Flag to completely disable debug and info logging for performance
+private let disableNonErrorLogs = currentLogLevel == .error
+
+@inline(__always)
+private func shouldLog(level: LogLevel) -> Bool {
+    return level.rawValue <= currentLogLevel.rawValue
+}
+
+@inline(__always)
+func logError(_ msg: @autoclosure () -> String) {
+    if shouldLog(level: .error) {
+        let ts = ISO8601DateFormatter().string(from: .init())
+        fputs("[LiveSel][ERROR] \(ts) \(msg())\n", stderr)
+    }
+}
+
+@inline(__always)
+func logWarn(_ msg: @autoclosure () -> String) {
+    if shouldLog(level: .warn) && !disableNonErrorLogs {
+        let ts = ISO8601DateFormatter().string(from: .init())
+        fputs("[LiveSel][WARN] \(ts) \(msg())\n", stderr)
+    }
+}
+
+@inline(__always)
+func logInfo(_ msg: @autoclosure () -> String) {
+    if shouldLog(level: .info) && !disableNonErrorLogs {
+        let ts = ISO8601DateFormatter().string(from: .init())
+        fputs("[LiveSel][INFO] \(ts) \(msg())\n", stderr)
+    }
+}
+
+@inline(__always)
+func logDebug(_ msg: @autoclosure () -> String) {
+    if shouldLog(level: .debug) && !disableNonErrorLogs {
+        let ts = ISO8601DateFormatter().string(from: .init())
+        fputs("[LiveSel][DEBUG] \(ts) \(msg())\n", stderr)
+    }
+}
+
+// Legacy function for backward compatibility
 @inline(__always)
 func log(_ msg: @autoclosure () -> String) {
-    let ts = ISO8601DateFormatter().string(from: .init())
-    fputs("[LiveSel] \(ts) \(msg())\n", stderr)
+    logInfo(msg())
+}
+
+// MARK: – App Fallback Cache -------------------------------------------------
+
+// Cache to store app bundle identifiers that are known to require fallback
+class AppFallbackCache {
+    private static var knownFallbackApps = Set<String>()
+    private static let cacheFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ghost_fallback_apps")
+    
+    // Load the cache from disk on first access
+    private static let _loadOnce: Void = {
+        do {
+            if FileManager.default.fileExists(atPath: cacheFile.path) {
+                let data = try Data(contentsOf: cacheFile)
+                if let apps = try? JSONDecoder().decode(Set<String>.self, from: data) {
+                    knownFallbackApps = apps
+                    logError("Loaded \(apps.count) apps in fallback cache")
+                }
+            }
+        } catch {
+            logError("Failed to load fallback cache: \(error)")
+        }
+    }()
+    
+    // Check if an app is known to require fallback
+    static func requiresFallback(_ bundleIdentifier: String?) -> Bool {
+        _ = _loadOnce // Ensure cache is loaded
+        guard let bundleId = bundleIdentifier else { return false }
+        return knownFallbackApps.contains(bundleId)
+    }
+    
+    // Add an app to the fallback cache
+    static func addToFallbackCache(_ bundleIdentifier: String?) {
+        _ = _loadOnce // Ensure cache is loaded
+        guard let bundleId = bundleIdentifier, !bundleId.isEmpty else { return }
+        
+        // Only add if it's not already in the cache
+        if !knownFallbackApps.contains(bundleId) {
+            knownFallbackApps.insert(bundleId)
+            logError("Added \(bundleId) to fallback cache")
+            saveCacheToDisk()
+        }
+    }
+    
+    // Save the cache to disk
+    private static func saveCacheToDisk() {
+        do {
+            let data = try JSONEncoder().encode(knownFallbackApps)
+            try data.write(to: cacheFile)
+        } catch {
+            logError("Failed to save fallback cache: \(error)")
+        }
+    }
 }
 
 // MARK: – SelectionTap -------------------------------------------------------
@@ -29,7 +133,7 @@ final class SelectionTap {
     // ---------------------- run -------------------------------------------
     func run() {
         guard AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeRetainedValue() as String: true] as CFDictionary) else {
-            log("AX access not granted – exiting"); exit(1)
+            logError("AX access not granted – exiting"); exit(1)
         }
 
         if let startElem = focusedElement() { hookSelection(on: startElem) }
@@ -43,9 +147,9 @@ final class SelectionTap {
     // ---------------------- polling ---------------------------------------
     private func pollFocus() {
         tick += 1
-        guard let elem = focusedElement() else { log("tick #\(tick): no focused element"); return }
+        guard let elem = focusedElement() else { logDebug("tick #\(tick): no focused element"); return }
         if lastElement == nil || !CFEqual(lastElement, elem) {
-            log("tick #\(tick): focus changed – re‑hooking")
+            logInfo("tick #\(tick): focus changed – re‑hooking")
             lastElement = elem
             hookSelection(on: elem)
         }
@@ -55,26 +159,37 @@ final class SelectionTap {
     private func focusedElement() -> AXUIElement? {
         guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
         let appElm = AXUIElementCreateApplication(app.processIdentifier)
+        
+        // Check if this app is known to require fallback
+        if AppFallbackCache.requiresFallback(app.bundleIdentifier) {
+            logInfo("Skipping accessibility check for known fallback app: \(app.localizedName ?? app.bundleIdentifier ?? "unknown")")
+            emitStatus("fallback_needed", "App \(app.localizedName ?? "unknown") is known to require fallback", appName: app.localizedName)
+            return nil
+        }
 
         // isolation (undocumented) – informational only
         var isoRef: CFTypeRef?
         let iso = AXUIElementCopyAttributeValue(appElm, "AXIsolatedTree" as CFString, &isoRef) == .success
-        log("front app: \(app.localizedName ?? "unknown") pid=\(app.processIdentifier) isolated=\(iso)")
+        logDebug("front app: \(app.localizedName ?? "unknown") pid=\(app.processIdentifier) isolated=\(iso)")
         
         // Emit isolation status for JS layer to know when fallback is needed
         if iso {
             emitStatus("isolated", "App \(app.localizedName ?? "unknown") has accessibility isolation", appName: app.localizedName)
+            // Add to fallback cache since isolated apps always need fallback
+            AppFallbackCache.addToFallbackCache(app.bundleIdentifier)
         }
 
         // 1) straight shot
         var val: CFTypeRef?
         let res = AXUIElementCopyAttributeValue(appElm, kAXFocusedUIElementAttribute as CFString, &val)
         if res == .success, let elem = val as! AXUIElement? { return elem }
-        log("AXFocusedUIElement failed (err=\(res.rawValue)) – trying fallback walk")
+        logWarn("AXFocusedUIElement failed (err=\(res.rawValue)) – trying fallback walk")
         
         // Emit fallback status when we get accessibility failures like -25212
         if res.rawValue == -25212 || res.rawValue == -25213 {
             emitStatus("fallback_needed", "App \(app.localizedName ?? "unknown") has accessibility limitations (err=\(res.rawValue))", appName: app.localizedName)
+            // Add to fallback cache since this app has accessibility limitations
+            AppFallbackCache.addToFallbackCache(app.bundleIdentifier)
         }
 
         // 2) fallback – walk focused window > children > depth‑first
@@ -82,7 +197,7 @@ final class SelectionTap {
         if AXUIElementCopyAttributeValue(appElm, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
            let winObj = winRef,
            let deep = deepSearch(in: (winObj as! AXUIElement), depth: 0) {
-            log("deepSearch found candidate element")
+            logDebug("deepSearch found candidate element")
             return deep
         }
 
@@ -118,7 +233,7 @@ final class SelectionTap {
     private func hookSelection(on element: AXUIElement) {
         if let obs = selectionObserver, let old = observedElement {
             AXObserverRemoveNotification(obs, old, kAXSelectedTextChangedNotification as CFString)
-            log("removed previous observer")
+            logDebug("removed previous observer")
         }
 
         var pid: pid_t = 0; AXUIElementGetPid(element, &pid)
@@ -128,10 +243,14 @@ final class SelectionTap {
                 emit(text: txt, status: "success") 
             }
         }, &obsPtr)
-        guard crt == .success, let obs = obsPtr else { log("AXObserverCreate failed (err=\(crt.rawValue))"); return }
+        guard crt == .success, let obs = obsPtr else { logError("AXObserverCreate failed (err=\(crt.rawValue))"); return }
 
         let add = AXObserverAddNotification(obs, element, kAXSelectedTextChangedNotification as CFString, nil)
-        log("AXObserverAddNotification -> \(add.rawValue == 0 ? "success" : "err=\(add.rawValue)")")
+        if add.rawValue == 0 {
+            logDebug("AXObserverAddNotification -> success")
+        } else {
+            logWarn("AXObserverAddNotification -> err=\(add.rawValue)")
+        }
 
         CFRunLoopAddSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(obs), .defaultMode)
         selectionObserver = obs
@@ -144,10 +263,10 @@ final class SelectionTap {
 private func selectedText(from element: AXUIElement) -> String? {
     var v: CFTypeRef?
     if AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &v) == .success, let s = v as? String, !s.isEmpty {
-        log("selectedText via kAXSelectedTextAttribute -> \(String(s.prefix(40)))…"); return s
+        logDebug("selectedText via kAXSelectedTextAttribute -> \(String(s.prefix(40)))…"); return s
     }
     if AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &v) == .success, let s = v as? String, !s.isEmpty {
-        log("selectedText via kAXValueAttribute -> \(String(s.prefix(40)))…"); return s
+        logDebug("selectedText via kAXValueAttribute -> \(String(s.prefix(40)))…"); return s
     }
     // parameterised (rare but included)
     if let len = textLength(element), len > 0 {
@@ -156,7 +275,7 @@ private func selectedText(from element: AXUIElement) -> String? {
             var out: CFTypeRef?
             if AXUIElementCopyParameterizedAttributeValue(element, kAXStringForRangeParameterizedAttribute as CFString, axRange, &out) == .success,
                let s = out as? String, !s.isEmpty {
-                log("selectedText via StringForRange -> \(String(s.prefix(40)))…"); return s
+                logDebug("selectedText via StringForRange -> \(String(s.prefix(40)))…"); return s
             }
         }
     }
@@ -198,6 +317,6 @@ private func emitStatus(_ status: String, _ message: String = "", appName: Strin
 // MARK: – bootstrap --------------------------------------------------------
 
 let tap = SelectionTap()
-log("SelectionTap launching…")
+logInfo("SelectionTap launching…")
 tap.run()
 RunLoop.current.run()
