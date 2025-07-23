@@ -75,6 +75,9 @@ function createPopupWindowImmediate(x, y, selectedText) {
     movable: false,
     skipTaskbar: true,
     transparent: true,
+    focusable: false,
+    show: false,
+    acceptFirstMouse: false,
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false
@@ -85,17 +88,31 @@ function createPopupWindowImmediate(x, y, selectedText) {
   
   popupWindow.once('ready-to-show', () => {
     popupWindow.webContents.send('selected-text', selectedText);
-    popupWindow.show();
-    popupWindow.focus();
-  });
-
-  // Close popup when Escape key is pressed
-  popupWindow.webContents.on('before-input-event', (event, input) => {
-    if (input.key === 'Escape' && input.type === 'keyDown') {
+    
+    // Show with explicit no-focus flag
+    popupWindow.showInactive();
+    
+    // Register global Escape shortcut when popup is shown
+    globalShortcut.register('Escape', () => {
       if (popupWindow && !popupWindow.isDestroyed()) {
         popupWindow.close();
       }
-    }
+    });
+  });
+
+  // Prevent any focus-related events
+  popupWindow.on('focus', () => {
+    popupWindow.blur(); // Immediately blur if somehow focused
+  });
+  
+  popupWindow.on('show', () => {
+    // Ensure it never gets focus even when shown
+    popupWindow.blur();
+  });
+
+  // Unregister Escape shortcut when popup is closed
+  popupWindow.on('closed', () => {
+    globalShortcut.unregister('Escape');
   });
 }
 

@@ -3,7 +3,7 @@ const path = require('path');
 
 let child = null;
 
-function startLiveWatcher(cb) {
+function startLiveWatcher(cb, statusCb) {
   if (child) return Promise.resolve(true);
   const bin = path.join(__dirname, '..', 'native', 'bin', 'SelectionTap');
 
@@ -19,7 +19,25 @@ function startLiveWatcher(cb) {
           resolved = true;
           resolve(true);
         }
-        try { cb(JSON.parse(buf.toString())); } catch (_) {}
+        try { 
+          const data = JSON.parse(buf.toString());
+          
+          // Handle status messages for fallback detection
+          if (data.status) {
+            if (data.status === 'isolated' || data.status === 'fallback_needed') {
+              console.error('[LiveSel helper] Status:', data.status, data.message || '');
+              if (statusCb) statusCb(data);
+            } else if (data.status === 'clipboard_fallback') {
+              console.error('[LiveSel helper] Using clipboard fallback');
+              if (statusCb) statusCb(data);
+            }
+          }
+          
+          // Only call main callback if we have actual text content
+          if (data.text) {
+            cb(data);
+          }
+        } catch (_) {}
       });
       
       child.stderr.on('data', (d) => {

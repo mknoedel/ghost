@@ -21,11 +21,24 @@ class SelectionStrategy {
 class SwiftBinaryStrategy extends SelectionStrategy {
   constructor() {
     super('SwiftBinary');
+    this.fallbackCallback = null;
+    this.mainCallback = null;
   }
 
   async start(callback) {
     this.logger.step('Starting Swift binary watcher...');
-    const success = await liveSel.startLiveWatcher(callback);
+    this.mainCallback = callback;
+    
+    const success = await liveSel.startLiveWatcher(callback, (statusData) => {
+      // Handle status messages from Swift binary
+      if (statusData.status === 'isolated' || statusData.status === 'fallback_needed') {
+        this.logger.warn(`Swift binary limitation detected: ${statusData.message || statusData.status}`);
+        if (this.fallbackCallback) {
+          this.fallbackCallback(statusData.status);
+        }
+      }
+    });
+    
     if (success) {
       this.isActive = true;
       this.logger.success('Swift binary watcher active');
@@ -34,6 +47,10 @@ class SwiftBinaryStrategy extends SelectionStrategy {
       this.logger.fail('Swift binary watcher failed');
       return false;
     }
+  }
+
+  setFallbackCallback(cb) {
+    this.fallbackCallback = cb;
   }
 
   stop() {
@@ -77,6 +94,8 @@ class StrategyManager {
     this.logger = new Logger('StrategyManager');
     this.strategies = [];
     this.activeStrategy = null;
+    this.fallbackStrategy = null;
+    this.callback = null;
     
     // Only add macOS strategies for now
     if (process.platform === 'darwin') {
@@ -89,6 +108,7 @@ class StrategyManager {
 
   async start(callback) {
     this.logger.info('Starting selection monitoring...');
+    this.callback = callback;
     
     for (const strategy of this.strategies) {
       try {
@@ -96,6 +116,18 @@ class StrategyManager {
         if (success) {
           this.activeStrategy = strategy;
           this.logger.success(`Using ${strategy.name} strategy`);
+          
+          // If this is the Swift strategy, set up fallback to AppleScript
+          if (strategy instanceof SwiftBinaryStrategy) {
+            const appleScriptStrategy = this.strategies.find(s => s instanceof AppleScriptStrategy);
+            if (appleScriptStrategy) {
+              strategy.setFallbackCallback(async (status) => {
+                this.logger.warn(`Swift strategy needs fallback (${status}), starting AppleScript...`);
+                await this.startFallback(appleScriptStrategy, callback);
+              });
+            }
+          }
+          
           return true;
         }
       } catch (error) {
@@ -107,15 +139,41 @@ class StrategyManager {
     return false;
   }
 
+  async startFallback(fallbackStrategy, callback) {
+    if (this.fallbackStrategy) {
+      this.logger.info(`Fallback ${fallbackStrategy.name} already running`);
+      return; // Already have fallback running
+    }
+    
+    try {
+      const success = await fallbackStrategy.start(callback);
+      if (success) {
+        this.fallbackStrategy = fallbackStrategy;
+        this.logger.success(`Fallback ${fallbackStrategy.name} strategy active`);
+      } else {
+        this.logger.fail(`Fallback ${fallbackStrategy.name} strategy failed`);
+      }
+    } catch (error) {
+      this.logger.error(`Fallback ${fallbackStrategy.name} strategy error:`, error.message);
+    }
+  }
+
   stop() {
     if (this.activeStrategy) {
       this.activeStrategy.stop();
       this.activeStrategy = null;
-      this.logger.info('Selection monitoring stopped');
     }
+    if (this.fallbackStrategy) {
+      this.fallbackStrategy.stop();
+      this.fallbackStrategy = null;
+    }
+    this.logger.info('Selection monitoring stopped');
   }
 
   getActiveStrategy() {
+    if (this.activeStrategy && this.fallbackStrategy) {
+      return `${this.activeStrategy.name} + ${this.fallbackStrategy.name} (hybrid)`;
+    }
     return this.activeStrategy?.name || 'None';
   }
 }
