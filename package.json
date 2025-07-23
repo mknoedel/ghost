@@ -8,7 +8,9 @@
     "dev": "electron . --dev",
     "build": "electron-builder",
     "lint": "eslint src/",
-    "test": "jest"
+    "test": "jest",
+    "build-native": "bash scripts/build-native.sh",
+    "postinstall": "npm run build-native"
   },
   "keywords": [
     "text-selection",
@@ -33,6 +35,7 @@
     },
     "files": [
       "src/**/*",
+      "native/bin/SelectionTap",
       "node_modules/**/*",
       "package.json"
     ]

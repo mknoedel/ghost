@@ -1,3 +1,4 @@
+const liveSel = require('./mac-live-selection')
 const { globalShortcut } = require('electron');
 const nut = require('@nut-tree-fork/nut-js');
 const { keyboard: nutKeyboard, Key: nutKey } = nut;
@@ -21,15 +22,9 @@ class SelectionMonitor {
 
     // Only try macOS selection monitoring
     if (process.platform === 'darwin') {
-      console.log('[SelectionMonitor] Starting macOS selection watcher...');
-      const started = macSelection.startWatching(this.onSelection);
-      
-      if (started) {
-        this.isRunning = true;
-        console.log('[SelectionMonitor] ✅ macOS selection watcher active');
-      } else {
-        console.log('[SelectionMonitor] ❌ macOS selection watcher failed, manual mode only');
-      }
+      console.log('[SelectionMonitor] Starting macOS polling fallback due to binary issues...');
+      macSelection.startWatching(this.onSelection);
+      this.isRunning = true;
     } else {
       console.log(`[SelectionMonitor] Platform ${process.platform} not supported, manual mode only`);
     }
@@ -50,6 +45,7 @@ class SelectionMonitor {
 
     // Stop macOS watcher if running
     if (process.platform === 'darwin') {
+      liveSel.stopLiveWatcher();
       macSelection.stopWatching();
     }
 
