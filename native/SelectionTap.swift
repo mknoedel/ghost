@@ -63,7 +63,7 @@ final class SelectionTap {
         
         // Emit isolation status for JS layer to know when fallback is needed
         if iso {
-            emitStatus("isolated", "App \(app.localizedName ?? "unknown") has accessibility isolation")
+            emitStatus("isolated", "App \(app.localizedName ?? "unknown") has accessibility isolation", appName: app.localizedName)
         }
 
         // 1) straight shot
@@ -74,7 +74,7 @@ final class SelectionTap {
         
         // Emit fallback status when we get accessibility failures like -25212
         if res.rawValue == -25212 || res.rawValue == -25213 {
-            emitStatus("fallback_needed", "App \(app.localizedName ?? "unknown") has accessibility limitations (err=\(res.rawValue))")
+            emitStatus("fallback_needed", "App \(app.localizedName ?? "unknown") has accessibility limitations (err=\(res.rawValue))", appName: app.localizedName)
         }
 
         // 2) fallback – walk focused window > children > depth‑first
@@ -87,7 +87,7 @@ final class SelectionTap {
         }
 
         // 3) nothing – emit fallback needed status for JS layer
-        emitStatus("fallback_needed", "Unable to get focused element - accessibility may be limited")
+        emitStatus("fallback_needed", "Unable to get focused element - accessibility may be limited", appName: app.localizedName)
         return nil
     }
 
@@ -184,9 +184,12 @@ private func emit(text: String, status: String = "success") {
     }
 }
 
-private func emitStatus(_ status: String, _ message: String = "") {
+private func emitStatus(_ status: String, _ message: String = "", appName: String? = nil) {
     let (x, y) = mousePoint()
-    let obj: [String: Any] = ["status": status, "message": message, "x": x, "y": y, "ts": Int(Date().timeIntervalSince1970*1000)]
+    var obj: [String: Any] = ["status": status, "message": message, "x": x, "y": y, "ts": Int(Date().timeIntervalSince1970*1000)]
+    if let appName = appName {
+        obj["appName"] = appName
+    }
     if let data = try? JSONSerialization.data(withJSONObject: obj) {
         print(String(data: data, encoding: .utf8)!); fflush(stdout)
     }

@@ -3,6 +3,7 @@ const nut = require('@nut-tree-fork/nut-js');
 const { keyboard: nutKeyboard, Key: nutKey } = nut;
 const { StrategyManager } = require('./selection-strategies');
 const Logger = require('./logger');
+const { isValidSelection } = require('./selection-utils');
 
 class SelectionMonitor {
   constructor(onSelectionCallback) {
@@ -81,7 +82,7 @@ class SelectionMonitor {
       clipboard.writeText(originalClipboard);
 
       // Validate copied text
-      if (this.isValidSelection(copiedText)) {
+      if (isValidSelection(copiedText)) {
         this.logger.debug(`Manual trigger text: "${copiedText.slice(0, 30)}${copiedText.length > 30 ? '...' : ''}"`);
         
         const cursor = screen.getCursorScreenPoint();
@@ -100,11 +101,6 @@ class SelectionMonitor {
     }
   }
 
-  isValidSelection(text) {
-    return text && 
-           text.trim().length > 0 && 
-           text.toLowerCase().includes('a');
-  }
 }
 
 module.exports = SelectionMonitor;

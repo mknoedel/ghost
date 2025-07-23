@@ -2,6 +2,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 const { screen } = require('electron');
 const Logger = require('./logger');
+const { isValidSelection } = require('./selection-utils');
 
 const SCRIPTS_DIR = path.join(__dirname, 'mac-scripts');
 
@@ -57,11 +58,9 @@ class MacSelectionWatcher {
   async checkForSelection() {
     try {
       const text = await this.getSelectedText();
-      console.log({text})
       if (
-        text &&
-        text !== this.lastSelection &&
-        text.toLowerCase().includes('a')
+        isValidSelection(text) &&
+        text !== this.lastSelection
       ) {
         this.lastSelection = text;
         const { x, y } = screen.getCursorScreenPoint();
