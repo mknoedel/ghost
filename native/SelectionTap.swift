@@ -72,6 +72,8 @@ func log(_ msg: @autoclosure () -> String) {
 
 // Cache to store app bundle identifiers that are known to require fallback
 class AppFallbackCache {
+    // Manual flag to enable/disable cache usage for testing
+    static var isCacheEnabled = true
     private static var knownFallbackApps = Set<String>()
     private static let cacheFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ghost_fallback_apps")
     
@@ -94,7 +96,8 @@ class AppFallbackCache {
     static func requiresFallback(_ bundleIdentifier: String?) -> Bool {
         _ = _loadOnce // Ensure cache is loaded
         guard let bundleId = bundleIdentifier else { return false }
-        return knownFallbackApps.contains(bundleId)
+        // Only check the cache if it's enabled
+        return isCacheEnabled && knownFallbackApps.contains(bundleId)
     }
     
     // Add an app to the fallback cache
@@ -102,11 +105,16 @@ class AppFallbackCache {
         _ = _loadOnce // Ensure cache is loaded
         guard let bundleId = bundleIdentifier, !bundleId.isEmpty else { return }
         
-        // Only add if it's not already in the cache
-        if !knownFallbackApps.contains(bundleId) {
-            knownFallbackApps.insert(bundleId)
-            logError("Added \(bundleId) to fallback cache")
-            saveCacheToDisk()
+        // Only proceed if cache is enabled
+        if isCacheEnabled {
+            // Only add if it's not already in the cache
+            if !knownFallbackApps.contains(bundleId) {
+                knownFallbackApps.insert(bundleId)
+                logError("Added \(bundleId) to fallback cache")
+                saveCacheToDisk()
+            }
+        } else {
+            logDebug("Cache disabled: skipped adding \(bundleId) to fallback cache")
         }
     }
     
