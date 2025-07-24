@@ -39,7 +39,7 @@ class MacSelectionWatcher {
 
     this.checkInterval = setInterval(() => this.checkForSelection(), 2000);
     this.isWatching = true;
-    this.logger.success('Started watching (3s interval)');
+    this.logger.success('Started watching (2s interval)');
     return true;
   }
 
