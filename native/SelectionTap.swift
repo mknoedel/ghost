@@ -137,6 +137,7 @@ final class SelectionTap {
     private var pollTimer: Timer?
     private var lastElement: AXUIElement?
     private var tick = 0
+    private var lastLoggedApp: String?
 
     // ---------------------- run -------------------------------------------
     func run() {
@@ -146,7 +147,7 @@ final class SelectionTap {
 
         if let startElem = focusedElement() { hookSelection(on: startElem) }
 
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             self?.pollFocus()
         }
         RunLoop.current.add(pollTimer!, forMode: .default)
@@ -167,6 +168,14 @@ final class SelectionTap {
     private func focusedElement() -> AXUIElement? {
         guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
         let appElm = AXUIElementCreateApplication(app.processIdentifier)
+        
+        // Log focused app changes for debugging
+        let currentAppId = app.bundleIdentifier ?? "unknown"
+        if lastLoggedApp != currentAppId {
+            lastLoggedApp = currentAppId
+            let appName = app.localizedName ?? currentAppId
+            logInfo("Focused app: \(appName) (\(currentAppId))")
+        }
         
         // Check if this app is known to require fallback
         if AppFallbackCache.requiresFallback(app.bundleIdentifier) {

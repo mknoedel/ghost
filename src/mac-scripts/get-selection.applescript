@@ -16,20 +16,20 @@ try
     end tell
 
     ------------------------------------------------------------------
-    -- 1) AXSelectedText (preferred path)
-    ------------------------------------------------------------------
+    -- 1) Clipboard
+    ------------------------------------------------------------------0
+    -- a) SIMPLE IDLE DETECTION
     try
-        tell application "System Events"
-            set selText to value of attribute "AXSelectedText" ¬
-                         of attribute "AXFocusedUIElement" of frontProc
-        end tell
-        if selText is not missing value and selText ≠ "" then return selText
+        set idleTimeSeconds to (do shell script "python3 -c \"import Quartz; print(int(Quartz.CGEventSourceSecondsSinceLastEventType(Quartz.kCGEventSourceStateHIDSystemState, Quartz.kCGAnyInputEventType)))\"")
+        set idleTime to idleTimeSeconds as integer
+        
+        -- Require 5 seconds of complete system idle time (no keyboard/mouse activity)
+        if idleTime < 5 then
+            return "" -- User was active within last 5 seconds
+        end if
     end try
-
-    ------------------------------------------------------------------
-    -- 2) Clipboard fallback (quiet)
-    ------------------------------------------------------------------
-    -- a) Skip if “Copy” is disabled (avoids beep)
+    
+    -- b) Skip if "Copy" is disabled (avoids beep)
     set canCopy to false
     try
         tell application "System Events"
@@ -41,24 +41,29 @@ try
     end try
     if not canCopy then return ""
 
-    -- b) Snapshot current clipboard & changeCount
+    -- c) Snapshot current clipboard & changeCount
     set pb to current application's NSPasteboard's generalPasteboard()
     set origCount to pb's changeCount()
     set origData to (do shell script "pbpaste | base64")
 
-    -- c) Trigger copy
-    tell application "System Events" to keystroke "c" using command down
+    -- d) Trigger copy
+    tell application "System Events" to keystroke (ASCII character 28) using {command down, shift down}
+    tell application "System Events" to keystroke (ASCII character 30) using {command down, shift down}
+    tell application "System Events" to keystroke "c" using {command down}
 
-    -- d) Wait (≤1 s) for changeCount bump
-    repeat 20 times
-        delay 0.05
+    -- e) Wait (≤1 s) for changeCount bump
+    repeat 12 times
+        delay 0.025
         if (pb's changeCount()) > origCount then exit repeat
     end repeat
 
-    -- e) Read clipboard (may still match old)
+    -- e.5) unselect
+    tell application "System Events" to keystroke (ASCII character 29) using {}
+
+    -- f) Read clipboard (may still match old)
     set grabbed to (do shell script "pbpaste")
 
-    -- f) Restore only if we actually changed it
+    -- g) Restore only if we actually changed it
     if (pb's changeCount()) > origCount then ¬
         do shell script "echo " & quoted form of origData & " | base64 -D | pbcopy"
 
