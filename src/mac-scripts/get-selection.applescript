@@ -52,7 +52,7 @@ try
     -- e) Wait for changeCount bump from Stage 1
     set pasteboardUpdated to false
     repeat 12 times
-        delay 0.025
+        delay 0.02
         if (pb's changeCount()) > origCount then
             set pasteboardUpdated to true
             exit repeat
@@ -63,12 +63,12 @@ try
     if pasteboardUpdated is false then
         -- Select all text to the left of the cursor to understand textbox context
         tell application "System Events" to keystroke (ASCII character 28) using {command down, shift down}
-        delay 0.05
+        delay 0.02
         tell application "System Events" to keystroke "c" using {command down}
         
         -- Wait for changeCount bump from Stage 2
         repeat 12 times
-            delay 0.025
+            delay 0.02
             if (pb's changeCount()) > origCount then
                 set pasteboardUpdated to true
                 exit repeat
@@ -88,20 +88,19 @@ try
         tell application "System Events"
             -- Select address bar
             keystroke "l" using {command down}
-            delay 0.05
+            delay 0.02
             
             -- Copy URL
             keystroke "c" using {command down}
             
             -- Restore address bar (select again then escape)
-            keystroke "l" using {command down}
-            delay 0.05
+            delay 0.02
             key code 53 -- Escape
         end tell
         
         -- Wait for changeCount bump from Stage 3 (same pattern as Stage 2)
         repeat 12 times
-            delay 0.025
+            delay 0.02
             if (pb's changeCount()) > origCount then
                 set pasteboardUpdated to true
                 logIt("[URL] Successfully copied page URL")
