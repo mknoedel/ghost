@@ -81,10 +81,43 @@ try
         end if
     end if
 
-    -- f) Read clipboard (may still match old)
+    -- g) Stage 3: Final fallback - copy URL from address bar
+    if pasteboardUpdated is false then
+        logIt("[URL] Attempting to copy page URL")
+        
+        tell application "System Events"
+            -- Select address bar
+            keystroke "l" using {command down}
+            delay 0.05
+            
+            -- Copy URL
+            keystroke "c" using {command down}
+            
+            -- Restore address bar (select again then escape)
+            keystroke "l" using {command down}
+            delay 0.05
+            key code 53 -- Escape
+        end tell
+        
+        -- Wait for changeCount bump from Stage 3 (same pattern as Stage 2)
+        repeat 12 times
+            delay 0.025
+            if (pb's changeCount()) > origCount then
+                set pasteboardUpdated to true
+                logIt("[URL] Successfully copied page URL")
+                exit repeat
+            end if
+        end repeat
+        
+        if not pasteboardUpdated then
+            logIt("[URL] Failed to copy page URL")
+        end if
+    end if
+
+    -- g) Read clipboard (may still match old)
     set currentTextbox to (do shell script "pbpaste")
 
-    -- g) Restore only if we actually changed it
+    -- h) Restore only if we actually changed it
     if (pb's changeCount()) > origCount then ¬
         do shell script "echo " & quoted form of origData & " | base64 -D | pbcopy"
 
