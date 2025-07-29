@@ -8,6 +8,7 @@
 import Foundation
 import ApplicationServices
 import Cocoa
+import Quartz
 
 // MARK: – util logging ------------------------------------------------------
 
@@ -275,9 +276,15 @@ final class SelectionTap {
     }
 }
 
-// MARK: – text extraction helpers -----------------------------------------
+// MARK: – Enhanced text extraction helpers ------------------------------------
 
 private func selectedText(from element: AXUIElement) -> String? {
+    // First try the enhanced selection gathering
+    if let enhanced = enhancedSelectedText(from: element) {
+        return enhanced
+    }
+    
+    // Fall back to original implementation
     var v: CFTypeRef?
     if AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &v) == .success, let s = v as? String, !s.isEmpty {
         logDebug("selectedText via kAXSelectedTextAttribute -> \(String(s.prefix(40)))…"); return s
@@ -298,6 +305,85 @@ private func selectedText(from element: AXUIElement) -> String? {
     }
     return nil
 }
+
+private func enhancedSelectedText(from element: AXUIElement) -> String? {
+    // Stage 1: Try to get current selection via accessibility APIs
+    if let selection = getCurrentSelection(from: element) {
+        logDebug("Enhanced: Got current selection via accessibility")
+        return selection
+    }
+    
+    // Stage 2: Try to get broader context from the text field (for accessible apps only)
+    if let context = getTextFieldContext(from: element) {
+        logDebug("Enhanced: Got text field context")
+        return context
+    }
+    
+    return nil
+}
+
+private func getCurrentSelection(from element: AXUIElement) -> String? {
+    // Method 1: Direct selected text attribute (most reliable for accessible apps)
+    var selectedTextRef: CFTypeRef?
+    if AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &selectedTextRef) == .success,
+       let selectedText = selectedTextRef as? String, !selectedText.isEmpty {
+        return selectedText
+    }
+    
+    // Method 2: Try selected text range (more detailed but sometimes unreliable)
+    var selectedRangeRef: CFTypeRef?
+    if AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &selectedRangeRef) == .success,
+       let axValue = selectedRangeRef,
+       CFGetTypeID(axValue) == AXValueGetTypeID() {
+        
+        var range = CFRange()
+        if AXValueGetValue(axValue as! AXValue, .cfRange, &range), range.length > 0 {
+            // Get the selected text using the range
+            var textRef: CFTypeRef?
+            if let axRange = AXValueCreate(.cfRange, &range),
+               AXUIElementCopyParameterizedAttributeValue(element, kAXStringForRangeParameterizedAttribute as CFString, axRange, &textRef) == .success,
+               let text = textRef as? String, !text.isEmpty {
+                return text
+            }
+        }
+    }
+    
+    return nil
+}
+
+private func getTextFieldContext(from element: AXUIElement) -> String? {
+    // For accessible apps, try to get the current content of text fields
+    // This works well for Terminal, TextEdit, native macOS apps, etc.
+    var valueRef: CFTypeRef?
+    if AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valueRef) == .success,
+       let fullText = valueRef as? String, !fullText.isEmpty {
+        
+        // For short text (< 100 chars), return the full content
+        if fullText.count <= 100 {
+            return fullText
+        }
+        
+        // For longer text, try to find a reasonable context around cursor position
+        var insertionPointRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXInsertionPointLineNumberAttribute as CFString, &insertionPointRef) == .success,
+           let insertionPoint = insertionPointRef as? Int {
+            
+            // Get some context around the cursor position
+            let lines = fullText.components(separatedBy: .newlines)
+            if insertionPoint < lines.count {
+                let contextLines = max(0, insertionPoint - 2)...min(lines.count - 1, insertionPoint + 2)
+                let contextText = Array(lines[contextLines]).joined(separator: "\n")
+                return contextText.isEmpty ? fullText : contextText
+            }
+        }
+        
+        // Fallback: return first 200 characters for long text
+        return String(fullText.prefix(200))
+    }
+    
+    return nil
+}
+
 
 private func textLength(_ elem: AXUIElement) -> Int? {
     var v: CFTypeRef?
