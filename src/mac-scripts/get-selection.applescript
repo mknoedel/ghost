@@ -24,7 +24,7 @@ try
         set idleTime to idleTimeSeconds as integer
         
         -- Require 30 seconds of complete system idle time (no keyboard/mouse activity)
-        if idleTime < 30 then
+        if idleTime < 5 then
             return "" -- User was active within last 5 seconds
         end if
     end try
@@ -49,10 +49,10 @@ try
     -- d) Stage 1: Check if user already has something selected
     tell application "System Events" to keystroke "c" using {command down}
 
-    -- e) Wait for changeCount bump from Stage 1
+    -- e) Wait for changeCount bump from Stage 1 (reduced polling)
     set pasteboardUpdated to false
-    repeat 12 times
-        delay 0.02
+    repeat 6 times
+        delay 0.05
         if (pb's changeCount()) > origCount then
             set pasteboardUpdated to true
             exit repeat
@@ -66,9 +66,9 @@ try
         delay 0.02
         tell application "System Events" to keystroke "c" using {command down}
         
-        -- Wait for changeCount bump from Stage 2
-        repeat 12 times
-            delay 0.02
+        -- Wait for changeCount bump from Stage 2 (reduced polling)
+        repeat 4 times
+            delay 0.05
             if (pb's changeCount()) > origCount then
                 set pasteboardUpdated to true
                 exit repeat
@@ -98,9 +98,9 @@ try
             key code 53 -- Escape
         end tell
         
-        -- Wait for changeCount bump from Stage 3 (same pattern as Stage 2)
-        repeat 12 times
-            delay 0.02
+        -- Wait for changeCount bump from Stage 3 (reduced polling)
+        repeat 4 times
+            delay 0.05
             if (pb's changeCount()) > origCount then
                 set pasteboardUpdated to true
                 logIt("[URL] Successfully copied page URL")
@@ -119,6 +119,8 @@ try
     -- h) Restore only if we actually changed it
     if (pb's changeCount()) > origCount then ¬
         do shell script "echo " & quoted form of origData & " | base64 -D | pbcopy"
+
+    logIt("Current Textbox: " & currentTextbox)
 
     if currentTextbox ≠ "" and currentTextbox ≠ (do shell script "echo " & quoted form of origData & " | base64 -D") then
         return currentTextbox
