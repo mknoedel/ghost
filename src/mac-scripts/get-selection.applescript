@@ -23,8 +23,8 @@ try
         set idleTimeSeconds to (do shell script "python3 -c \"import Quartz; print(int(Quartz.CGEventSourceSecondsSinceLastEventType(Quartz.kCGEventSourceStateHIDSystemState, Quartz.kCGAnyInputEventType)))\"")
         set idleTime to idleTimeSeconds as integer
         
-        -- Require 5 seconds of complete system idle time (no keyboard/mouse activity)
-        if idleTime < 5 then
+        -- Require 30 seconds of complete system idle time (no keyboard/mouse activity)
+        if idleTime < 30 then
             return "" -- User was active within last 5 seconds
         end if
     end try
