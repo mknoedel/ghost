@@ -58,12 +58,12 @@ class MacSelectionWatcher {
   async checkForSelection() {
     try {
       const text = await this.getSelectedText();
-      
+
       // Always hide popup on any selection change, even invalid ones
       if (text !== this.lastSelection) {
         // First, hide any existing popup
         this.callback?.({ hideOnly: true });
-        
+
         // Then, only create a new popup if the selection is valid
         if (isValidSelection(text)) {
           this.lastSelection = text;
@@ -95,28 +95,27 @@ class MacSelectionWatcher {
 
   /* shared helper */
   runOsa(scriptPath) {
-    return new Promise((resolve) => {
+    return new Promise(resolve => {
       const proc = spawn('osascript', [scriptPath]);
-  
+
       let out = '';
       let err = '';
-  
-      proc.stdout.on('data', (d) => (out += d));
-      proc.stderr.on('data', (d) => (err += d));
-  
-      proc.on('close', (code) => {
+
+      proc.stdout.on('data', d => (out += d));
+      proc.stderr.on('data', d => (err += d));
+
+      proc.on('close', code => {
         if (err) this.logger.debug('[osascript stderr] ' + err.trim());
         if (code !== 0) this.logger.warn('osascript exit code', code);
         resolve(out.trim());
       });
-  
-      proc.on('error', (e) => {
+
+      proc.on('error', e => {
         this.logger.error('spawn error:', e.message);
         resolve('');
       });
     });
   }
-  
 
   /* (unchanged) */
   async requestPermissions() {
@@ -140,10 +139,10 @@ class MacSelectionWatcher {
   }
 
   runOsaInline(inline) {
-    return new Promise((resolve) => {
+    return new Promise(resolve => {
       const proc = spawn('osascript', ['-e', inline]);
       let out = '';
-      proc.stdout.on('data', (d) => (out += d));
+      proc.stdout.on('data', d => (out += d));
       proc.on('close', () => resolve(out.trim()));
       proc.on('error', () => resolve(''));
     });
@@ -153,7 +152,7 @@ class MacSelectionWatcher {
 /* ---------- module facade ---------- */
 
 let watcher = null;
-exports.startWatching = (cb) => {
+exports.startWatching = cb => {
   watcher ??= new MacSelectionWatcher();
   return watcher.startWatching(cb);
 };

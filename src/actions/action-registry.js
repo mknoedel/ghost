@@ -65,8 +65,9 @@ class ActionRegistry {
       label: 'Title',
       icon: '📝',
       handler: async (text, { ipcRenderer }) => {
-        const titleText = text.replace(/\w\S*/g, (txt) => 
-          txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase()
+        const titleText = text.replace(
+          /\w\S*/g,
+          txt => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase()
         );
         await ipcRenderer.invoke('copy-text', titleText);
         return { success: true, message: 'Converted to title case' };

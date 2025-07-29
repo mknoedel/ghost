@@ -59,11 +59,11 @@ class SelectionMonitor {
     }
 
     // Manual trigger removed
-    
+
     // Reset fallback state
     this.fallbackStarted = false;
     this.restrictedApps.clear();
-    
+
     this.isRunning = false;
     this.logger.info('Stopped');
   }
@@ -72,15 +72,17 @@ class SelectionMonitor {
 
   async startSwiftBinary() {
     try {
-      const success = await liveSel.startLiveWatcher(this.onSelection, (statusData) => {
+      const success = await liveSel.startLiveWatcher(this.onSelection, statusData => {
         // Handle status messages from Swift binary for runtime fallback
         if (statusData.status === 'isolated' || statusData.status === 'fallback_needed') {
           const appName = statusData.appName || 'unknown';
-          
+
           // Cache this app as restricted
           this.restrictedApps.add(appName);
-          this.logger.debug(`Swift binary limitation detected for ${appName}, starting AppleScript fallback...`);
-          
+          this.logger.debug(
+            `Swift binary limitation detected for ${appName}, starting AppleScript fallback...`
+          );
+
           // Start AppleScript fallback if not already running
           if (!this.appleScriptActive && !this.fallbackStarted) {
             this.fallbackStarted = true;
@@ -88,7 +90,7 @@ class SelectionMonitor {
           }
         }
       });
-      
+
       if (success) {
         this.swiftActive = true;
         return true;
@@ -112,7 +114,6 @@ class SelectionMonitor {
     }
     return false;
   }
-
 }
 
 module.exports = SelectionMonitor;

@@ -18,7 +18,7 @@ function createMainWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'main.html'));
-  
+
   if (process.argv.includes('--dev')) {
     mainWindow.webContents.openDevTools();
     mainWindow.show();
@@ -33,14 +33,14 @@ function createPopupWindow(x, y, selectedText) {
   if (popupDebounceTimer) {
     clearTimeout(popupDebounceTimer);
   }
-  
-  const currentBounds = `${Math.round(x/10)*10},${Math.round(y/10)*10}`;
-  
+
+  const currentBounds = `${Math.round(x / 10) * 10},${Math.round(y / 10) * 10}`;
+
   // Skip if this is a duplicate position within debounce window
   if (lastPopupBounds === currentBounds) {
     return;
   }
-  
+
   popupDebounceTimer = setTimeout(() => {
     createPopupWindowImmediate(x, y, selectedText);
     lastPopupBounds = currentBounds;
@@ -51,7 +51,7 @@ function hidePopupWindow() {
   if (popupWindow && !popupWindow.isDestroyed()) {
     popupWindow.close();
   }
-  
+
   // Reset debounce timer and last bounds
   if (popupDebounceTimer) {
     clearTimeout(popupDebounceTimer);
@@ -68,13 +68,16 @@ function createPopupWindowImmediate(x, y, selectedText) {
   const { screen } = require('electron');
   const display = screen.getDisplayNearestPoint({ x, y });
   const bounds = display.workArea;
-  
+
   const popupWidth = 400;
   const popupHeight = 60;
-  
+
   // Position popup near selection instead of using arbitrary offset
-  let popupX = Math.max(bounds.x, Math.min(x - popupWidth / 2, bounds.x + bounds.width - popupWidth));
-  let popupY = Math.max(bounds.y, y - popupHeight - 10); // Small gap above selection
+  const popupX = Math.max(
+    bounds.x,
+    Math.min(x - popupWidth / 2, bounds.x + bounds.width - popupWidth)
+  );
+  const popupY = Math.max(bounds.y, y - popupHeight - 10); // Small gap above selection
 
   popupWindow = new BrowserWindow({
     width: popupWidth,
@@ -97,13 +100,13 @@ function createPopupWindowImmediate(x, y, selectedText) {
   });
 
   popupWindow.loadFile(path.join(__dirname, 'renderer', 'popup.html'));
-  
+
   popupWindow.once('ready-to-show', () => {
     popupWindow.webContents.send('selected-text', selectedText);
-    
+
     // Show with explicit no-focus flag
     popupWindow.showInactive();
-    
+
     // Register global Escape shortcut when popup is shown
     globalShortcut.register('Escape', () => {
       if (popupWindow && !popupWindow.isDestroyed()) {
@@ -116,7 +119,7 @@ function createPopupWindowImmediate(x, y, selectedText) {
   popupWindow.on('focus', () => {
     popupWindow.blur(); // Immediately blur if somehow focused
   });
-  
+
   popupWindow.on('show', () => {
     // Ensure it never gets focus even when shown
     popupWindow.blur();
@@ -134,7 +137,7 @@ function handleTextSelection(selectionData) {
     hidePopupWindow();
     return;
   }
-  
+
   // Otherwise, create a new popup if we have valid text
   if (selectionData && selectionData.text && selectionData.text.trim().length > 0) {
     createPopupWindow(selectionData.x, selectionData.y, selectionData.text);

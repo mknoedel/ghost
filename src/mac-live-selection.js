@@ -9,21 +9,19 @@ function startLiveWatcher(cb, statusCb) {
   if (child) return Promise.resolve(true);
   const bin = path.join(__dirname, '..', 'native', 'bin', 'SelectionTap');
 
-  return new Promise((resolve) => {
+  return new Promise(resolve => {
     try {
       child = spawn(bin);
-      let hasOutput = false;
       let resolved = false;
-      
-      child.stdout.on('data', (buf) => {
-        hasOutput = true;
+
+      child.stdout.on('data', buf => {
         if (!resolved) {
           resolved = true;
           resolve(true);
         }
-        try { 
+        try {
           const data = JSON.parse(buf.toString());
-          
+
           // Handle status messages for fallback detection
           if (data.status) {
             if (data.status === 'isolated' || data.status === 'fallback_needed') {
@@ -34,19 +32,21 @@ function startLiveWatcher(cb, statusCb) {
               if (statusCb) statusCb(data);
             }
           }
-          
+
           // Only call main callback if we have actual text content
           if (data.text) {
             cb(data);
           }
-        } catch (_) {}
+        } catch (e) {
+          logger.error('Failed to parse JSON:', e.message);
+        }
       });
-      
-      child.stderr.on('data', (d) => {
-        console.error('[LiveSel helper]', d.toString().trim());
+
+      child.stderr.on('data', d => {
+        logger.error('[LiveSel helper]', d.toString().trim());
       });
-      
-      child.on('close', (code) => { 
+
+      child.on('close', code => {
         logger.warn(`Process closed with code: ${code}`);
         child = null;
         if (!resolved) {
@@ -54,8 +54,8 @@ function startLiveWatcher(cb, statusCb) {
           resolve(false);
         }
       });
-      
-      child.on('error', (err) => {
+
+      child.on('error', err => {
         logger.error('Process error:', err.message);
         child = null;
         if (!resolved) {
@@ -73,7 +73,6 @@ function startLiveWatcher(cb, statusCb) {
           resolve(true); // Consider it successful if process is running
         }
       }, 1000);
-
     } catch (err) {
       logger.error('Failed to start:', err.message);
       resolve(false);
@@ -81,6 +80,9 @@ function startLiveWatcher(cb, statusCb) {
   });
 }
 
-function stopLiveWatcher() { child?.kill(); child = null; }
+function stopLiveWatcher() {
+  child?.kill();
+  child = null;
+}
 
 module.exports = { startLiveWatcher, stopLiveWatcher };
