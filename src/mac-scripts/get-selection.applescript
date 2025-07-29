@@ -17,7 +17,7 @@ try
 
     ------------------------------------------------------------------
     -- 1) Clipboard
-    ------------------------------------------------------------------0
+    ------------------------------------------------------------------
     -- a) SIMPLE IDLE DETECTION
     try
         set idleTimeSeconds to (do shell script "python3 -c \"import Quartz; print(int(Quartz.CGEventSourceSecondsSinceLastEventType(Quartz.kCGEventSourceStateHIDSystemState, Quartz.kCGAnyInputEventType)))\"")
@@ -46,29 +46,50 @@ try
     set origCount to pb's changeCount()
     set origData to (do shell script "pbpaste | base64")
 
-    -- d) Trigger copy
-    tell application "System Events" to keystroke (ASCII character 28) using {command down, shift down}
-    tell application "System Events" to keystroke (ASCII character 30) using {command down, shift down}
+    -- d) Stage 1: Check if user already has something selected
     tell application "System Events" to keystroke "c" using {command down}
 
-    -- e) Wait (≤1 s) for changeCount bump
+    -- e) Wait for changeCount bump from Stage 1
+    set pasteboardUpdated to false
     repeat 12 times
         delay 0.025
-        if (pb's changeCount()) > origCount then exit repeat
+        if (pb's changeCount()) > origCount then
+            set pasteboardUpdated to true
+            exit repeat
+        end if
     end repeat
 
-    -- e.5) unselect
-    tell application "System Events" to keystroke (ASCII character 29) using {}
+    -- f) Stage 2: If no selection, select all text to the left of cursor
+    if pasteboardUpdated is false then
+        -- Select all text to the left of the cursor to understand textbox context
+        tell application "System Events" to keystroke (ASCII character 28) using {command down, shift down}
+        delay 0.05
+        tell application "System Events" to keystroke "c" using {command down}
+        
+        -- Wait for changeCount bump from Stage 2
+        repeat 12 times
+            delay 0.025
+            if (pb's changeCount()) > origCount then
+                set pasteboardUpdated to true
+                exit repeat
+            end if
+        end repeat
+        
+        -- Reset cursor to original position (move right to deselect)
+        if pasteboardUpdated is true then
+            tell application "System Events" to keystroke (ASCII character 29) -- Right arrow
+        end if
+    end if
 
     -- f) Read clipboard (may still match old)
-    set grabbed to (do shell script "pbpaste")
+    set currentTextbox to (do shell script "pbpaste")
 
     -- g) Restore only if we actually changed it
     if (pb's changeCount()) > origCount then ¬
         do shell script "echo " & quoted form of origData & " | base64 -D | pbcopy"
 
-    if grabbed ≠ "" and grabbed ≠ (do shell script "echo " & quoted form of origData & " | base64 -D") then
-        return grabbed
+    if currentTextbox ≠ "" and currentTextbox ≠ (do shell script "echo " & quoted form of origData & " | base64 -D") then
+        return currentTextbox
     else
         return ""
     end if
