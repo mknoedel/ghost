@@ -14,9 +14,18 @@
     "test": "jest",
     "build-native": "bash scripts/build-native.sh",
     "build-native:release": "bash scripts/build-native.sh --release",
-    "clean": "rm -rf dist/ native/bin/ node_modules/.cache/",
-    "validate": "npm run lint && npm run format:check && npm run test",
-    "postinstall": "npm run build-native"
+    "build-native:clean": "bash scripts/build-native.sh --clean",
+    "swift:lint": "bash scripts/build-native.sh --lint",
+    "swift:test": "bash scripts/build-native.sh --test",
+    "swift:format": "cd native && swiftformat .",
+    "swift:format-lint": "npm run swift:format && npm run swift:lint",
+    "applescript:validate": "bash scripts/validate-applescript.sh",
+    "native:validate": "npm run swift:format-lint && npm run applescript:validate",
+    "clean": "rm -rf dist/ native/bin/ native/.build/ node_modules/.cache/",
+    "validate": "npm run lint && npm run format:check && npm run test && npm run native:validate",
+    "validate:quick": "npm run lint && npm run format:check",
+    "dev:setup": "npm install && npm run build-native && npm run validate:quick",
+    "postinstall": "brew install swiftlint swiftformat"
   },
   "keywords": [
     "text-selection",

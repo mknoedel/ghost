@@ -1,0 +1,81 @@
+# SwiftFormat configuration for SelectionTap
+# Coordinated with .swiftlint.yml to ensure compatibility
+--swiftversion 5.9
+
+# Indentation (matches project standard)
+--indent 4
+--tabwidth 4
+--smarttabs enabled
+
+# Line length (matches SwiftLint warning threshold)
+--maxwidth 90
+
+# Spacing
+--trimwhitespace always
+--insertlines enabled
+--removelines enabled
+
+# Wrapping (performance-optimized for accessibility code)
+--wraparguments before-first
+--wrapparameters before-first
+--wrapcollections before-first
+--wrapreturntype if-multiline
+--wrapconditions before-first
+
+# Function and type formatting
+--funcattributes prev-line
+--typeattributes prev-line
+
+# Control flow (readable style for complex accessibility logic)
+--guardelse next-line
+--elseposition next-line
+--ifdef no-indent
+
+# Braces and brackets
+--allman false
+--wraparguments before-first
+
+# Import organization
+--importgrouping testable-bottom
+
+# Rules to enable (code quality improvements)
+--enable isEmpty
+--enable redundantSelf
+--enable sortImports
+--enable unusedArguments
+--enable redundantParens
+--enable redundantReturn
+--enable duplicateImports
+--enable redundantType
+--enable redundantClosure
+--enable redundantGet
+--enable redundantInit
+--enable redundantLet
+--enable redundantPattern
+--enable redundantRawValues
+--enable redundantVoidReturnType
+--enable spaceAroundBraces
+--enable spaceAroundBrackets
+--enable spaceAroundComments
+--enable spaceAroundGenerics
+--enable spaceAroundOperators
+--enable spaceAroundParens
+--enable spaceInsideBraces
+--enable spaceInsideBrackets
+--enable spaceInsideComments
+--enable spaceInsideGenerics
+--enable spaceInsideParens
+
+# Rules to disable (avoid conflicts with SwiftLint)
+--disable trailingCommas                # Disabled in SwiftLint too
+--disable wrapMultilineStatementBraces  # Can conflict with SwiftLint brace rules
+--disable blankLinesAtStartOfScope      # Let SwiftLint handle scope formatting
+--disable blankLinesAtEndOfScope        # Let SwiftLint handle scope formatting
+
+# Comments and documentation
+--doccomments before-declarations
+--stripunusedargs closure-only
+
+# Performance-critical settings for real-time code
+--fragment false                        # Don't treat as code fragment
+--conflictmarkers reject                 # Reject files with conflict markers

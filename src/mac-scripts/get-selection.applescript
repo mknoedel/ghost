@@ -2,16 +2,44 @@
 use scripting additions
 use framework "AppKit" -- gives us NSPasteboard
 
+-- Structured logging functions
+on logInfo(msg)
+    try
+        set timestamp to (current date) as string
+        do shell script "echo " & quoted form of ("[AppleScript][INFO] " & timestamp & " " & msg) & " >> /tmp/ghost-applescript.log"
+    end try
+end logInfo
+
+on logError(msg)
+    try
+        set timestamp to (current date) as string
+        do shell script "echo " & quoted form of ("[AppleScript][ERROR] " & timestamp & " " & msg) & " >> /tmp/ghost-applescript.log"
+    end try
+end logError
+
+-- Legacy compatibility function
 on logIt(msg)
-    log msg
+    logInfo(msg)
 end logIt
+
+-- UI Elements check utility
+on checkUIElementsEnabled()
+    try
+        tell application "System Events"
+            return (UI elements enabled)
+        end tell
+    on error
+        return false
+    end try
+end checkUIElementsEnabled
 
 try
     ------------------------------------------------------------------
     -- 0) Preconditions
     ------------------------------------------------------------------
+    if not checkUIElementsEnabled() then return ""
+    
     tell application "System Events"
-        if not (UI elements enabled) then return ""
         set frontProc to first application process whose frontmost is true
     end tell
 
@@ -62,9 +90,10 @@ try
     -- f) Stage 2: If no selection, select all text to the left of cursor
     if pasteboardUpdated is false then
         -- Select all text to the left of the cursor to understand textbox context
-        tell application "System Events" to keystroke (ASCII character 28) using {command down, shift down}
-        delay 0.02
-        tell application "System Events" to keystroke "c" using {command down}
+        tell application "System Events"
+            keystroke (ASCII character 28) using {command down, shift down}
+            keystroke "c" using {command down}
+        end tell
         
         -- Wait for changeCount bump from Stage 2 (reduced polling)
         repeat 4 times
@@ -86,15 +115,10 @@ try
         logIt("[URL] Attempting to copy page URL")
         
         tell application "System Events"
-            -- Select address bar
+            -- Select address bar and copy URL in one sequence
             keystroke "l" using {command down}
-            delay 0.02
-            
-            -- Copy URL
             keystroke "c" using {command down}
-            
-            -- Restore address bar (select again then escape)
-            delay 0.02
+            -- Restore address bar
             key code 53 -- Escape
         end tell
         
@@ -117,8 +141,9 @@ try
     set currentTextbox to (do shell script "pbpaste")
 
     -- h) Restore only if we actually changed it
-    if (pb's changeCount()) > origCount then ¬
+    if (pb's changeCount()) > origCount then
         do shell script "echo " & quoted form of origData & " | base64 -D | pbcopy"
+    end if
 
     logIt("Current Textbox: " & currentTextbox)
 
