@@ -11,5 +11,4 @@ dist/
 .env.production.local
 
 native/.build/
-native/bin/SelectionTap
-native/bin/SelectionTap.dSYM/
+native/bin/
