@@ -18,7 +18,7 @@ enum LogLevel: Int {
     case debug = 3
 }
 
-private let currentLogLevel: LogLevel = .debug
+private let currentLogLevel: LogLevel = .info
 
 @inline(__always)
 private func shouldLog(level: LogLevel) -> Bool {
@@ -578,43 +578,143 @@ class BrowserTracker: EventTracker {
         var currentTitle = ""
         var tabCount: Int?
 
-        // 1) URL/TITLE from AXWebArea (works for Chrome, Safari, Arc …)
-        if let webArea = firstDescendant(element: axWindow, role: "AXWebArea") {
+        // Debug logging can be enabled here if needed for troubleshooting browser issues
+        // if currentApp.bundleIdentifier.contains("Chrome") {
+        //     logDebug("=== CHROME ACCESSIBILITY TREE ===")
+        //     dumpAXTree(axWindow, maxDepth: 4)
+        //     logDebug("=== END CHROME TREE ===")
+        // }
 
-            for attr in [kAXURLAttribute, kAXDocumentAttribute] {
-                var ref: CFTypeRef?
+        // 1) URL/TITLE extraction - different strategies for different browsers
+        if currentApp.bundleIdentifier.contains("Chrome") {
+            // Chrome-specific URL extraction
+            // LIMITATION: Chrome's accessibility API doesn't reliably expose active tab URLs.
+            // The window-level AXDocument often reflects a "base" URL rather than the
+            // active tab's URL.
+            // However, window titles do correctly reflect the active tab content.
+            logDebug("🔍 Extracting URL from Chrome accessibility tree")
+
+            // Get title from window (reliable - reflects active tab)
+            var titleRef: CFTypeRef?
+            if
+                AXUIElementCopyAttributeValue(
+                    axWindow,
+                    kAXTitleAttribute as CFString,
+                    &titleRef
+                ) == .success,
+                let title = titleRef as? String, !title.isEmpty {
+                currentTitle = title
+                logDebug("Got title from Chrome window: '\(title.prefix(50))'")
+            }
+
+            // Get URL from window AXDocument (may be stale but provides domain info)
+            var docRef: CFTypeRef?
+            if
+                AXUIElementCopyAttributeValue(
+                    axWindow,
+                    kAXDocumentAttribute as CFString,
+                    &docRef
+                ) == .success,
+                let docURL = docRef as? String, !docURL.isEmpty {
+                currentURL = docURL
+                logDebug("Got URL from Chrome window.AXDocument: '\(docURL.prefix(50))'")
+            }
+
+            // Fallback: try to find AXWebArea with accurate URL (uncommon in Chrome)
+            if currentURL.isEmpty {
                 if
-                    AXUIElementCopyAttributeValue(webArea, attr as CFString, &ref) ==
-                    .success {
+                    let webArea = firstDescendant(
+                        element: axWindow,
+                        role: "AXWebArea",
+                        maxDepth: 6
+                    ) {
+                    logDebug("✅ Found AXWebArea in Chrome tree")
 
-                    // String case
-                    if let s = ref as? String, !s.isEmpty { currentURL = s; break }
-
-                    // CFURL case
-                    if CFGetTypeID(ref) == CFURLGetTypeID() {
-                        let cfURL = ref as! CFURL
-                        let s = CFURLGetString(cfURL) as String
-                        if !s.isEmpty { currentURL = s; break }
+                    for attr in [kAXURLAttribute, kAXDocumentAttribute] {
+                        var ref: CFTypeRef?
+                        if
+                            AXUIElementCopyAttributeValue(
+                                webArea,
+                                attr as CFString,
+                                &ref
+                            ) ==
+                            .success {
+                            if let s = ref as? String, !s.isEmpty {
+                                currentURL = s
+                                logDebug(
+                                    "Got URL from Chrome AXWebArea.\(attr): '\(s.prefix(50))'"
+                                )
+                                break
+                            }
+                            else if CFGetTypeID(ref) == CFURLGetTypeID() {
+                                let cfURL = ref as! CFURL
+                                let s = CFURLGetString(cfURL) as String
+                                if !s.isEmpty {
+                                    currentURL = s
+                                    logDebug(
+                                        "Got URL from Chrome AXWebArea.\(attr) (CFURL): '\(s.prefix(50))'"
+                                    )
+                                    break
+                                }
+                            }
+                        }
                     }
                 }
             }
 
-            var titleRef: CFTypeRef?
-            if
-                AXUIElementCopyAttributeValue(
-                    webArea,
-                    kAXTitleAttribute as CFString,
-                    &titleRef
-                ) == .success,
-                let t = titleRef as? String, !t.isEmpty {
-                currentTitle = t
+        }
+        else {
+            // Safari/Arc and other WebKit browsers - use AXWebArea
+            if let webArea = firstDescendant(element: axWindow, role: "AXWebArea") {
+                logDebug("✅ Found AXWebArea in \(currentApp.name)")
+
+                for attr in [kAXURLAttribute, kAXDocumentAttribute] {
+                    var ref: CFTypeRef?
+                    if
+                        AXUIElementCopyAttributeValue(webArea, attr as CFString, &ref) ==
+                        .success {
+
+                        // String case
+                        if let s = ref as? String, !s.isEmpty {
+                            currentURL = s
+                            logDebug("Got URL from AXWebArea.\(attr): '\(s.prefix(50))'")
+                            break
+                        }
+
+                        // CFURL case
+                        if CFGetTypeID(ref) == CFURLGetTypeID() {
+                            let cfURL = ref as! CFURL
+                            let s = CFURLGetString(cfURL) as String
+                            if !s.isEmpty {
+                                currentURL = s
+                                logDebug(
+                                    "Got URL from AXWebArea.\(attr) (CFURL): '\(s.prefix(50))'"
+                                )
+                                break
+                            }
+                        }
+                    }
+                }
+
+                var titleRef: CFTypeRef?
+                if
+                    AXUIElementCopyAttributeValue(
+                        webArea,
+                        kAXTitleAttribute as CFString,
+                        &titleRef
+                    ) == .success,
+                    let t = titleRef as? String, !t.isEmpty {
+                    currentTitle = t
+                    logDebug("Got title from AXWebArea: '\(t.prefix(50))'")
+                }
+            }
+            else {
+                logDebug("❌ No AXWebArea found in \(currentApp.name)")
             }
         }
 
-        // 2) Chrome-only tab fallback (only if URL still empty)
-        if
-            currentURL.isEmpty,
-            let tabsAttr = capabilities.tabsAttribute {
+        // 2) Tab count extraction for any remaining browsers that support it
+        if let tabsAttr = capabilities.tabsAttribute {
             var tabsRef: CFTypeRef?
             if
                 AXUIElementCopyAttributeValue(
@@ -623,22 +723,8 @@ class BrowserTracker: EventTracker {
                     &tabsRef
                 ) == .success,
                 let tabs = tabsRef as? [AXUIElement], !tabs.isEmpty {
-
                 tabCount = tabs.count
-                currentURL = extractChromeURL(from: tabs[0], appName: currentApp.name)
-
-                if currentTitle.isEmpty {
-                    var ref: CFTypeRef?
-                    if
-                        AXUIElementCopyAttributeValue(
-                            tabs[0],
-                            kAXTitleAttribute as CFString,
-                            &ref
-                        ) == .success,
-                        let t = ref as? String, !t.isEmpty {
-                        currentTitle = t
-                    }
-                }
+                logDebug("Found \(tabCount ?? 0) tabs in \(currentApp.name)")
             }
         }
 
@@ -710,149 +796,78 @@ class BrowserTracker: EventTracker {
         return nil
     }
 
-    // Chrome URL extraction: AXURL is stored directly on the first tab element
-    private func extractChromeURL(from firstTab: AXUIElement, appName: String) -> String {
-        let urlAttributes = ["AXURL", "AXDescription", "AXHelp", "AXValue"]
-
-        for urlAttr in urlAttributes {
-            var tabURLRef: CFTypeRef?
-            let result = AXUIElementCopyAttributeValue(
-                firstTab,
-                urlAttr as CFString,
-                &tabURLRef
-            )
-            if result == .success {
-                if let tabURL = tabURLRef as? String {
-                    if
-                        !tabURL.isEmpty,
-                        tabURL.hasPrefix("http://") || tabURL
-                            .hasPrefix("https://") || tabURL.contains("://") {
-                        logDebug("Chrome URL from \(urlAttr): '\(tabURL.prefix(50))'")
-                        return tabURL
-                    }
-                }
-                else if
-                    let nsurl = tabURLRef as? NSURL,
-                    let urlString = nsurl.absoluteString {
-                    if
-                        !urlString.isEmpty,
-                        urlString.hasPrefix("http://") || urlString
-                            .hasPrefix("https://") || urlString.contains("://") {
-                        logDebug(
-                            "Chrome URL from \(urlAttr) (NSURL): '\(urlString.prefix(50))'"
-                        )
-                        return urlString
-                    }
-                }
-                else if CFGetTypeID(tabURLRef) == CFURLGetTypeID() {
-                    let cfurl = tabURLRef as! CFURL
-                    if let urlString = CFURLGetString(cfurl) as String? {
-                        if
-                            !urlString.isEmpty,
-                            urlString.hasPrefix("http://") || urlString
-                                .hasPrefix("https://") || urlString.contains("://") {
-                            logDebug(
-                                "Chrome URL from \(urlAttr) (CFURL): '\(urlString.prefix(50))'"
-                            )
-                            return urlString
-                        }
-                    }
-                }
-            }
-        }
-        return ""
-    }
-
-    // Safari URL extraction: AXURL is stored on AXWebArea or AXDocument elements within
-    // the window
-    private func extractSafariURL(from window: AXUIElement, appName: String) -> String {
-        // Try AXWebArea first (most common in Safari)
-        if let webArea = firstDescendant(element: window, role: "AXWebArea") {
-            if
-                let url = extractURLFromElement(
-                    webArea,
-                    elementType: "AXWebArea",
-                    appName: appName
-                ) {
-                return url
-            }
-        }
-
-        // Try AXDocument as fallback (some Safari builds)
-        if let document = firstDescendant(element: window, role: "AXDocument") {
-            if
-                let url = extractURLFromElement(
-                    document,
-                    elementType: "AXDocument",
-                    appName: appName
-                ) {
-                return url
-            }
-        }
-
-        logDebug("No Safari URL found in AXWebArea or AXDocument for \(appName)")
-        return ""
-    }
-
-    // Extract URL from a specific accessibility element
-    private func extractURLFromElement(
-        _ element: AXUIElement,
-        elementType: String,
-        appName: String
+    // Helper: recursively search for any URL in the accessibility tree
+    private func findURLInTree(
+        element: AXUIElement,
+        depth: Int,
+        maxDepth: Int
     )
-        -> String? {
-        let urlAttributes = ["AXURL", "AXDescription", "AXHelp", "AXValue"]
+        -> String {
+        guard depth < maxDepth else { return "" }
 
-        for urlAttr in urlAttributes {
-            var urlRef: CFTypeRef?
-            let result = AXUIElementCopyAttributeValue(
-                element,
-                urlAttr as CFString,
-                &urlRef
-            )
-            if result == .success {
-                if let urlString = urlRef as? String {
-                    if
-                        !urlString.isEmpty,
-                        urlString.hasPrefix("http://") || urlString
-                            .hasPrefix("https://") || urlString.contains("://") {
-                        logDebug(
-                            "Safari URL from \(elementType).\(urlAttr): '\(urlString.prefix(50))'"
-                        )
-                        return urlString
-                    }
+        // Check URL attributes on current element
+        let urlAttributes = [
+            "AXURL",
+            kAXDocumentAttribute,
+            "AXDescription",
+            "AXHelp",
+            "AXValue"
+        ]
+        for attr in urlAttributes {
+            var ref: CFTypeRef?
+            if
+                AXUIElementCopyAttributeValue(element, attr as CFString, &ref) ==
+                .success {
+                if let s = ref as? String, !s.isEmpty, isValidURL(s) {
+                    return s
                 }
-                else if
-                    let nsurl = urlRef as? NSURL,
-                    let urlString = nsurl.absoluteString {
-                    if
-                        !urlString.isEmpty,
-                        urlString.hasPrefix("http://") || urlString
-                            .hasPrefix("https://") || urlString.contains("://") {
-                        logDebug(
-                            "Safari URL from \(elementType).\(urlAttr) (NSURL): '\(urlString.prefix(50))'"
-                        )
-                        return urlString
-                    }
-                }
-                else if CFGetTypeID(urlRef) == CFURLGetTypeID() {
-                    let cfurl = urlRef as! CFURL
-                    if let urlString = CFURLGetString(cfurl) as String? {
-                        if
-                            !urlString.isEmpty,
-                            urlString.hasPrefix("http://") || urlString
-                                .hasPrefix("https://") || urlString.contains("://") {
-                            logDebug(
-                                "Safari URL from \(elementType).\(urlAttr) (CFURL): '\(urlString.prefix(50))'"
-                            )
-                            return urlString
-                        }
+                else if CFGetTypeID(ref) == CFURLGetTypeID() {
+                    let cfURL = ref as! CFURL
+                    let s = CFURLGetString(cfURL) as String
+                    if !s.isEmpty, isValidURL(s) {
+                        return s
                     }
                 }
             }
         }
-        return nil
+
+        // Recurse into children
+        var kidsRef: CFTypeRef?
+        if
+            AXUIElementCopyAttributeValue(
+                element,
+                kAXChildrenAttribute as CFString,
+                &kidsRef
+            ) == .success,
+            let kids = kidsRef as? [AXUIElement] {
+            for kid in kids {
+                let result = findURLInTree(
+                    element: kid,
+                    depth: depth + 1,
+                    maxDepth: maxDepth
+                )
+                if !result.isEmpty {
+                    return result
+                }
+            }
+        }
+
+        return ""
     }
+
+    // Helper: check if string looks like a valid URL
+    private func isValidURL(_ string: String) -> Bool {
+        string.hasPrefix("http://") || string.hasPrefix("https://") || string
+            .contains("://")
+    }
+
+    // Additional helper methods for specialized browser URL extraction could be added
+    // here
+    // Currently focused on Chrome window-level and Safari AXWebArea approaches
+
+    // Legacy helper methods kept for potential future use or debugging
+    // These are no longer used in the main URL extraction flow but may be useful
+    // for specialized cases or troubleshooting specific browser versions
 
     private func getBrowserCapabilities(for app: AppInfo) -> BrowserCapabilities {
         let bundleId = app.bundleIdentifier
@@ -1007,6 +1022,80 @@ class BrowserTracker: EventTracker {
             tabsAttribute: tabsAttribute,
             lastChecked: Date()
         )
+    }
+
+    // ───── Debug helper ──────────────────────────────────────────────────────────
+    private func dumpAXTree(
+        _ elem: AXUIElement,
+        indent: String = "",
+        depth: Int = 0,
+        maxDepth: Int = 4
+    ) {
+
+        guard depth <= maxDepth else { return }
+
+        // Role + (optional) identifier
+        var roleRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(
+            elem,
+            kAXRoleAttribute as CFString,
+            &roleRef
+        )
+        let role = (roleRef as? String) ?? "?"
+
+        var idRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(
+            elem,
+            kAXIdentifierAttribute as CFString,
+            &idRef
+        )
+        let ident = (idRef as? String) ?? ""
+
+        logDebug("\(indent)• \(role)\(ident.isEmpty ? "" : "  id=\(ident)")")
+
+        // Dump all attributes (name: value)
+        var namesCF: CFArray?
+        if
+            AXUIElementCopyAttributeNames(elem, &namesCF) == .success,
+            let names = namesCF as? [String] {
+            for name in names {
+                var vRef: CFTypeRef?
+                if
+                    AXUIElementCopyAttributeValue(
+                        elem,
+                        name as CFString,
+                        &vRef
+                    ) == .success {
+                    let txt: String = if let s = vRef as? String { s }
+                    else if CFGetTypeID(vRef) == CFURLGetTypeID() {
+                        (CFURLGetString(vRef as! CFURL) as String)
+                    }
+                    else {
+                        String(describing: vRef)
+                    }
+                    logDebug("\(indent)   \(name): \(txt.prefix(120))")
+                }
+            }
+        }
+
+        // Recurse into children
+        var kidsRef: CFTypeRef?
+        if
+            AXUIElementCopyAttributeValue(
+                elem,
+                kAXChildrenAttribute as CFString,
+                &kidsRef
+            ) == .success,
+            let kids = kidsRef as? [AXUIElement] {
+            for kid in kids {
+                dumpAXTree(
+                    kid,
+                    indent: indent + "  ",
+                    depth: depth + 1,
+                    maxDepth: maxDepth
+                )
+            }
+        }
     }
 }
 
