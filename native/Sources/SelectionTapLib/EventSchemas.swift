@@ -47,20 +47,18 @@ public struct AppInfo: Codable {
     public let bundleIdentifier: String
     public let processIdentifier: Int32
     public let isAccessible: Bool
-    public let isIsolated: Bool
     public let requiresFallback: Bool
     public let focusState: String
     public let executableURL: String
     public let launchDate: Double
     
     public init(name: String, bundleIdentifier: String, processIdentifier: Int32, 
-                isAccessible: Bool, isIsolated: Bool, requiresFallback: Bool,
+                isAccessible: Bool, requiresFallback: Bool,
                 focusState: String, executableURL: String, launchDate: Double) {
         self.name = name
         self.bundleIdentifier = bundleIdentifier
         self.processIdentifier = processIdentifier
         self.isAccessible = isAccessible
-        self.isIsolated = isIsolated
         self.requiresFallback = requiresFallback
         self.focusState = focusState
         self.executableURL = executableURL
@@ -73,7 +71,6 @@ public struct AppInfo: Codable {
             "bundleIdentifier": bundleIdentifier,
             "processIdentifier": processIdentifier,
             "isAccessible": isAccessible,
-            "isIsolated": isIsolated,
             "requiresFallback": requiresFallback,
             "focusState": focusState,
             "executableURL": executableURL,

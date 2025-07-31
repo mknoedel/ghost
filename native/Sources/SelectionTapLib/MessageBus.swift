@@ -147,7 +147,13 @@ public class DuplicateEventFilter: EventFilter {
         case let windowEvent as WindowUpdateEvent:
             return "window_\(windowEvent.windowTitle)_\(windowEvent.windowPosition.x)_\(windowEvent.windowPosition.y)"
         case let browserEvent as BrowserNavigationEvent:
-            return "browser_\(browserEvent.currentURL)"
+            // For browser events, include timestamp to allow focus-change events
+            // even when navigating to the same page/tab
+            let identifier = !browserEvent.currentURL.isEmpty ? 
+                browserEvent.currentURL : 
+                (browserEvent.pageTitle ?? "untitled")
+            // Include seconds timestamp to allow multiple focuses per second but dedupe rapid duplicates
+            return "browser_\(browserEvent.app.bundleIdentifier)_\(identifier.hashValue)_\(browserEvent.timestamp / 1000)"
         default:
             return "\(event.eventType.rawValue)_\(event.timestamp)"
         }
@@ -165,7 +171,10 @@ public class DataQualityFilter: EventFilter {
         case let windowEvent as WindowUpdateEvent:
             return !windowEvent.windowTitle.isEmpty
         case let browserEvent as BrowserNavigationEvent:
-            return !browserEvent.currentURL.isEmpty && URL(string: browserEvent.currentURL) != nil
+            // Allow events with either valid URL or valid page title
+            let hasValidURL = !browserEvent.currentURL.isEmpty && URL(string: browserEvent.currentURL) != nil
+            let hasValidTitle = browserEvent.pageTitle != nil && !browserEvent.pageTitle!.isEmpty
+            return hasValidURL || hasValidTitle
         default:
             return true
         }

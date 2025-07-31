@@ -18,7 +18,7 @@ enum LogLevel: Int {
     case debug = 3
 }
 
-private let currentLogLevel: LogLevel = .info
+private let currentLogLevel: LogLevel = .debug
 
 @inline(__always)
 private func shouldLog(level: LogLevel) -> Bool {
@@ -436,48 +436,358 @@ class WindowTracker: EventTracker {
 
 class BrowserTracker: EventTracker {
     private var lastURL: String = ""
+    private var lastPageTitle: String = ""
+    private var lastAppBundleId: String = ""
+    private var browserCapabilityCache: [String: BrowserCapabilities] = [:]
     
-    func checkForEvents(timestamp: Int64, mousePosition: (x: Int, y: Int)) -> ActivityEvent? {
-        let currentApp = getCurrentAppInfoStructured()
+    private struct BrowserCapabilities {
+        let hasURLSupport: Bool
+        let hasTitleSupport: Bool
+        let hasTabSupport: Bool
+        let urlAttribute: String?
+        let titleAttribute: String?
+        let tabsAttribute: String?
+        let lastChecked: Date
         
-        // Only track browser apps
-        let browserIds = ["chrome", "safari", "firefox", "edge"]
-        guard browserIds.contains(where: { currentApp.bundleIdentifier.lowercased().contains($0) }) else {
-            return nil
+        var isExpired: Bool {
+            Date().timeIntervalSince(lastChecked) > 300 // 5 minutes
+        }
+    }
+    
+    func checkForEvents(timestamp: Int64,
+                        mousePosition: (x: Int, y: Int)) -> ActivityEvent? {
+
+        let currentApp = getCurrentAppInfoStructured()
+        let capabilities = getBrowserCapabilities(for: currentApp)
+        guard capabilities.hasURLSupport || capabilities.hasTitleSupport else { return nil }
+
+        // Focused window
+        let appElement = AXUIElementCreateApplication(currentApp.processIdentifier)
+        var windowRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement,
+                                            kAXFocusedWindowAttribute as CFString,
+                                            &windowRef) == .success,
+            let window = windowRef,
+            CFGetTypeID(window) == AXUIElementGetTypeID()
+        else { return nil }
+        let axWindow = window as! AXUIElement
+
+        var hasChanges   = false
+        var currentURL   = ""
+        var currentTitle = ""
+        var tabCount: Int?
+
+        // 1) URL/TITLE from AXWebArea (works for Chrome, Safari, Arc …)
+        if let webArea = firstDescendant(element: axWindow, role: "AXWebArea") {
+
+            for attr in [kAXURLAttribute, kAXDocumentAttribute] {
+                var ref: CFTypeRef?
+                if AXUIElementCopyAttributeValue(webArea, attr as CFString, &ref) == .success {
+                    
+                    // String case
+                    if let s = ref as? String, !s.isEmpty { currentURL = s; break }
+                    
+                    // CFURL case
+                    if CFGetTypeID(ref) == CFURLGetTypeID() {
+                        let cfURL = ref as! CFURL
+                        let s = CFURLGetString(cfURL) as String
+                        if !s.isEmpty { currentURL = s; break }
+                    }
+                }
+            }
+
+            var titleRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(webArea,
+                                            kAXTitleAttribute as CFString,
+                                            &titleRef) == .success,
+            let t = titleRef as? String, !t.isEmpty {
+                currentTitle = t
+            }
+        }
+
+        // 2) Chrome-only tab fallback (only if URL still empty)
+        if currentURL.isEmpty,
+        let tabsAttr = capabilities.tabsAttribute {
+            var tabsRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(axWindow,
+                                            tabsAttr as CFString,
+                                            &tabsRef) == .success,
+            let tabs = tabsRef as? [AXUIElement], !tabs.isEmpty {
+
+                tabCount = tabs.count
+                currentURL = extractChromeURL(from: tabs[0], appName: currentApp.name)
+
+                if currentTitle.isEmpty {
+                    var ref: CFTypeRef?
+                    if AXUIElementCopyAttributeValue(tabs[0],
+                                                    kAXTitleAttribute as CFString,
+                                                    &ref) == .success,
+                    let t = ref as? String, !t.isEmpty {
+                        currentTitle = t
+                    }
+                }
+            }
+        }
+
+        // 3) Change detection
+        let focusChanged = currentApp.bundleIdentifier != lastAppBundleId
+        if focusChanged || currentURL != lastURL || currentTitle != lastPageTitle {
+            hasChanges = true
+        }
+        guard hasChanges else { return nil }
+
+        // Persist state
+        lastURL         = currentURL
+        lastPageTitle   = currentTitle
+        lastAppBundleId = currentApp.bundleIdentifier
+
+        let domain = URL(string: currentURL)?.host ?? "unknown"
+
+        return BrowserNavigationEvent(
+            timestamp:   timestamp,
+            mousePosition: mousePosition,
+            app:         currentApp,
+            currentURL:  currentURL,
+            domain:      domain,
+            tabCount:    tabCount,
+            pageTitle:   currentTitle.isEmpty ? nil : currentTitle
+        )
+    }
+
+    // Helper: depth-first search for the first element of a given AXRole
+    private func firstDescendant(element: AXUIElement,
+                                role wanted: String,
+                                depth: Int = 0,
+                                maxDepth: Int = 6) -> AXUIElement? {
+        guard depth < maxDepth else { return nil }
+        
+        var kidsRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element,
+                                        kAXChildrenAttribute as CFString,
+                                        &kidsRef) == .success,
+        let kids = kidsRef as? [AXUIElement] {
+            for kid in kids {
+                var roleRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(kid,
+                                                kAXRoleAttribute as CFString,
+                                                &roleRef) == .success,
+                let role = roleRef as? String, role == wanted {
+                    return kid
+                }
+                if let found = firstDescendant(element: kid,
+                                            role: wanted,
+                                            depth: depth + 1,
+                                            maxDepth: maxDepth) {
+                    return found
+                }
+            }
+        }
+        return nil
+    }
+    
+    // Chrome URL extraction: AXURL is stored directly on the first tab element
+    private func extractChromeURL(from firstTab: AXUIElement, appName: String) -> String {
+        let urlAttributes = ["AXURL", "AXDescription", "AXHelp", "AXValue"]
+        
+        for urlAttr in urlAttributes {
+            var tabURLRef: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(firstTab, urlAttr as CFString, &tabURLRef)
+            if result == .success {
+                if let tabURL = tabURLRef as? String {
+                    if !tabURL.isEmpty && (tabURL.hasPrefix("http://") || tabURL.hasPrefix("https://") || tabURL.contains("://")) {
+                        logDebug("Chrome URL from \(urlAttr): '\(tabURL.prefix(50))'")
+                        return tabURL
+                    }
+                } else if let nsurl = tabURLRef as? NSURL, let urlString = nsurl.absoluteString {
+                    if !urlString.isEmpty && (urlString.hasPrefix("http://") || urlString.hasPrefix("https://") || urlString.contains("://")) {
+                        logDebug("Chrome URL from \(urlAttr) (NSURL): '\(urlString.prefix(50))'")
+                        return urlString
+                    }
+                } else if CFGetTypeID(tabURLRef) == CFURLGetTypeID() {
+                    let cfurl = tabURLRef as! CFURL
+                    if let urlString = CFURLGetString(cfurl) as String? {
+                        if !urlString.isEmpty && (urlString.hasPrefix("http://") || urlString.hasPrefix("https://") || urlString.contains("://")) {
+                            logDebug("Chrome URL from \(urlAttr) (CFURL): '\(urlString.prefix(50))'")
+                            return urlString
+                        }
+                    }
+                }
+            }
+        }
+        return ""
+    }
+    
+    // Safari URL extraction: AXURL is stored on AXWebArea or AXDocument elements within the window
+    private func extractSafariURL(from window: AXUIElement, appName: String) -> String {
+        // Try AXWebArea first (most common in Safari)
+        if let webArea = firstDescendant(element: window, role: "AXWebArea") {
+            if let url = extractURLFromElement(webArea, elementType: "AXWebArea", appName: appName) {
+                return url
+            }
         }
         
-        let appElement = AXUIElementCreateApplication(currentApp.processIdentifier)
+        // Try AXDocument as fallback (some Safari builds)
+        if let document = firstDescendant(element: window, role: "AXDocument") {
+            if let url = extractURLFromElement(document, elementType: "AXDocument", appName: appName) {
+                return url
+            }
+        }
         
-        var windowRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &windowRef) == .success,
-           let window = windowRef,
-           CFGetTypeID(window) == AXUIElementGetTypeID() {
-            let axWindow = window as! AXUIElement
-            
-            // Try to get URL (this is browser-specific and may not always work)
+        logDebug("No Safari URL found in AXWebArea or AXDocument for \(appName)")
+        return ""
+    }
+    
+    // Extract URL from a specific accessibility element
+    private func extractURLFromElement(_ element: AXUIElement, elementType: String, appName: String) -> String? {
+        let urlAttributes = ["AXURL", "AXDescription", "AXHelp", "AXValue"]
+        
+        for urlAttr in urlAttributes {
             var urlRef: CFTypeRef?
-            if AXUIElementCopyAttributeValue(axWindow, "AXURL" as CFString, &urlRef) == .success,
-               let currentURL = urlRef as? String {
-                
-                if currentURL != lastURL {
-                    lastURL = currentURL
-                    
-                    let domain = URL(string: currentURL)?.host ?? "unknown"
-                    
-                    return BrowserNavigationEvent(
-                        timestamp: timestamp,
-                        mousePosition: mousePosition,
-                        app: currentApp,
-                        currentURL: currentURL,
-                        domain: domain,
-                        tabCount: nil,
-                        pageTitle: nil
-                    )
+            let result = AXUIElementCopyAttributeValue(element, urlAttr as CFString, &urlRef)
+            if result == .success {
+                if let urlString = urlRef as? String {
+                    if !urlString.isEmpty && (urlString.hasPrefix("http://") || urlString.hasPrefix("https://") || urlString.contains("://")) {
+                        logDebug("Safari URL from \(elementType).\(urlAttr): '\(urlString.prefix(50))'")
+                        return urlString
+                    }
+                } else if let nsurl = urlRef as? NSURL, let urlString = nsurl.absoluteString {
+                    if !urlString.isEmpty && (urlString.hasPrefix("http://") || urlString.hasPrefix("https://") || urlString.contains("://")) {
+                        logDebug("Safari URL from \(elementType).\(urlAttr) (NSURL): '\(urlString.prefix(50))'")
+                        return urlString
+                    }
+                } else if CFGetTypeID(urlRef) == CFURLGetTypeID() {
+                    let cfurl = urlRef as! CFURL
+                    if let urlString = CFURLGetString(cfurl) as String? {
+                        if !urlString.isEmpty && (urlString.hasPrefix("http://") || urlString.hasPrefix("https://") || urlString.contains("://")) {
+                            logDebug("Safari URL from \(elementType).\(urlAttr) (CFURL): '\(urlString.prefix(50))'")
+                            return urlString
+                        }
+                    }
+                }
+            }
+        }
+        return nil
+    }
+    
+    private func getBrowserCapabilities(for app: AppInfo) -> BrowserCapabilities {
+        let bundleId = app.bundleIdentifier
+        
+        // Return cached capabilities if fresh
+        if let cached = browserCapabilityCache[bundleId], !cached.isExpired {
+            return cached
+        }
+        
+        // Detect browser capabilities dynamically
+        let capabilities = detectBrowserCapabilities(for: app)
+        browserCapabilityCache[bundleId] = capabilities
+        
+        return capabilities
+    }
+    
+    private func detectBrowserCapabilities(for app: AppInfo) -> BrowserCapabilities {
+        logDebug("Detecting browser capabilities for: \(app.name) (\(app.bundleIdentifier))")
+        
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        
+        // Get focused window for testing
+        var windowRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &windowRef) == .success,
+              let window = windowRef,
+              CFGetTypeID(window) == AXUIElementGetTypeID() else {
+            logDebug("No focused window found for \(app.name), skipping browser detection")
+            return BrowserCapabilities(
+                hasURLSupport: false, hasTitleSupport: false, hasTabSupport: false,
+                urlAttribute: nil, titleAttribute: nil, tabsAttribute: nil,
+                lastChecked: Date()
+            )
+        }
+        
+        let axWindow = window as! AXUIElement
+        
+        // Test different URL attributes browsers might use
+        let urlAttributes = ["AXURL", "AXDescription", "AXHelp", "AXValue", "AXTitle"]
+        var urlAttribute: String? = nil
+        
+        for attr in urlAttributes {
+            var testRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(axWindow, attr as CFString, &testRef) == .success,
+               let value = testRef as? String,
+               !value.isEmpty {
+                logDebug("Testing \(attr) for \(app.name): '\(value.prefix(100))'")
+                if (value.hasPrefix("http://") || value.hasPrefix("https://") || value.contains("://")) {
+                    urlAttribute = attr
+                    logDebug("Found URL attribute \(attr) for \(app.name)")
+                    break
                 }
             }
         }
         
-        return nil
+        // If no URL found in window, try to find address bar in children
+        if urlAttribute == nil {
+            var childrenRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(axWindow, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+               let children = childrenRef as? [AXUIElement] {
+                logDebug("Searching \(children.count) child elements for URL info in \(app.name)")
+                
+                for child in children.prefix(8) { // Limit search to first 8 children
+                    for attr in ["AXURL", "AXValue", "AXDescription"] {
+                        var testRef: CFTypeRef?
+                        if AXUIElementCopyAttributeValue(child, attr as CFString, &testRef) == .success,
+                           let value = testRef as? String,
+                           !value.isEmpty,
+                           (value.hasPrefix("http://") || value.hasPrefix("https://") || value.contains("://")) {
+                            urlAttribute = attr
+                            logDebug("Found URL in child element using \(attr): '\(value.prefix(50))'")
+                            break
+                        }
+                    }
+                    if urlAttribute != nil { break }
+                }
+            }
+        }
+        
+        // Test title attributes - use window title as fallback
+        let titleAttributes = ["AXTitle", "AXDescription"]
+        var titleAttribute: String? = nil
+        
+        for attr in titleAttributes {
+            var testRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(axWindow, attr as CFString, &testRef) == .success,
+               let value = testRef as? String,
+               !value.isEmpty {
+                titleAttribute = attr
+                break
+            }
+        }
+        
+        // Test for tab support
+        let tabAttributes = ["AXTabs", "AXChildren"]
+        var tabsAttribute: String? = nil
+        
+        for attr in tabAttributes {
+            var testRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(axWindow, attr as CFString, &testRef) == .success,
+               let tabs = testRef as? [Any],
+               tabs.count > 0 {
+                tabsAttribute = attr
+                break
+            }
+        }
+        
+        // Chrome hack: Even if window doesn't have URL, tabs might have AXURL
+        let effectiveURLSupport = urlAttribute != nil || tabsAttribute != nil
+        
+        logDebug("Browser capabilities for \(app.name): URL=\(urlAttribute ?? "none"), Title=\(titleAttribute ?? "none"), Tabs=\(tabsAttribute ?? "none"), EffectiveURL=\(effectiveURLSupport)")
+        
+        return BrowserCapabilities(
+            hasURLSupport: effectiveURLSupport,
+            hasTitleSupport: titleAttribute != nil,
+            hasTabSupport: tabsAttribute != nil,
+            urlAttribute: urlAttribute,
+            titleAttribute: titleAttribute,
+            tabsAttribute: tabsAttribute,
+            lastChecked: Date()
+        )
     }
 }
 
@@ -568,32 +878,44 @@ private func getCurrentAppInfoStructured() -> AppInfo {
     guard let app = NSWorkspace.shared.frontmostApplication else {
         return AppInfo(
             name: "Unknown", bundleIdentifier: "unknown", processIdentifier: -1,
-            isAccessible: false, isIsolated: false, requiresFallback: true,
+            isAccessible: false, requiresFallback: true,
             focusState: "unfocused", executableURL: "", launchDate: 0
         )
     }
     
+    // Grab the app element
     let appElement = AXUIElementCreateApplication(app.processIdentifier)
     
-    // Check accessibility
-    var focusedRef: CFTypeRef?
-    let isAccessible = AXUIElementCopyAttributeValue(
-        appElement, kAXFocusedUIElementAttribute as CFString, &focusedRef
+    // Try fetching windows
+    var windowsRef: CFTypeRef?
+    let windowsOK = AXUIElementCopyAttributeValue(
+        appElement,
+        kAXWindowsAttribute as CFString,
+        &windowsRef
     ) == .success
     
-    // Check isolation
-    var isoRef: CFTypeRef?
-    let isIsolated = AXUIElementCopyAttributeValue(
-        appElement, "AXIsolatedTree" as CFString, &isoRef
-    ) == .success
+    let windows = (windowsRef as? [Any]) ?? []
+    let hasTree = windowsOK && !windows.isEmpty
+    
+    // If it has a tree, test focus access
+    let canAccessFocus: Bool = {
+        guard hasTree else { return false }
+        var focusedRef: CFTypeRef?
+        return AXUIElementCopyAttributeValue(
+            appElement,
+            kAXFocusedUIElementAttribute as CFString,
+            &focusedRef
+        ) == .success
+    }()
+    
+    let requiresFallback = !hasTree || !canAccessFocus
     
     return AppInfo(
         name: app.localizedName ?? app.bundleIdentifier ?? "Unknown",
         bundleIdentifier: app.bundleIdentifier ?? "unknown",
         processIdentifier: app.processIdentifier,
-        isAccessible: isAccessible,
-        isIsolated: isIsolated,
-        requiresFallback: isIsolated || !isAccessible,
+        isAccessible: hasTree && canAccessFocus,
+        requiresFallback: requiresFallback,
         focusState: "focused",
         executableURL: app.executableURL?.path ?? "",
         launchDate: app.launchDate?.timeIntervalSince1970 ?? 0

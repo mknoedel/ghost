@@ -59,8 +59,6 @@ class SelectionMonitor {
       this.appleScriptActive = false;
     }
 
-    // Manual trigger removed
-
     // Reset fallback state
     this.fallbackStarted = false;
     this.restrictedApps.clear();

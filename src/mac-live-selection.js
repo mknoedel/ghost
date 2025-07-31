@@ -36,10 +36,22 @@ function startLiveWatcher(cb, statusCb) {
         }
 
         try {
-          const data = JSON.parse(buf.toString().trim());
-          processEvent(data, cb, statusCb);
+          const rawData = buf.toString().trim();
+
+          // Handle multiple JSON objects on separate lines
+          const lines = rawData.split('\n').filter(line => line.trim());
+
+          for (const line of lines) {
+            try {
+              const data = JSON.parse(line);
+              processEvent(data, cb, statusCb);
+            } catch (lineError) {
+              logger.error('Failed to parse JSON line:', lineError.message);
+              logger.debug('Raw line:', line);
+            }
+          }
         } catch (e) {
-          logger.error('Failed to parse JSON:', e.message);
+          logger.error('Failed to process buffer:', e.message);
           logger.debug('Raw data:', buf.toString());
         }
       });
@@ -222,10 +234,9 @@ function logAppDetails(app) {
   if (!app) return;
 
   const accessible = app.isAccessible ? '✅' : '❌';
-  const isolated = app.isIsolated ? '🔒' : '🔓';
   const fallback = app.requiresFallback ? ' (fallback)' : '';
 
-  logger.info(`   ${app.name} (${app.bundleIdentifier}) ${accessible} ${isolated}${fallback}`);
+  logger.info(`   ${app.name} (${app.bundleIdentifier}) ${accessible}${fallback}`);
 }
 
 function stopLiveWatcher() {
