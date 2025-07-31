@@ -5,9 +5,8 @@ module.exports = {
     node: true,
     jest: true
   },
-  extends: [
-    'eslint:recommended'
-  ],
+  extends: ['eslint:recommended', 'plugin:prettier/recommended'],
+  plugins: ['prettier'],
   parserOptions: {
     ecmaVersion: 'latest',
     sourceType: 'module'
@@ -18,30 +17,25 @@ module.exports = {
     'no-console': 'warn',
     'prefer-const': 'error',
     'no-var': 'error',
-    
-    // Style Consistency
-    'indent': ['error', 2],
-    'quotes': ['error', 'single'],
-    'semi': ['error', 'always'],
-    'comma-dangle': ['error', 'never'],
-    'object-curly-spacing': ['error', 'always'],
-    'array-bracket-spacing': ['error', 'never'],
-    
+
+    // Prettier Integration
+    'prettier/prettier': ['error'],
+
     // Best Practices
-    'eqeqeq': ['error', 'always'],
+    eqeqeq: ['error', 'always'],
     'no-eval': 'error',
     'no-implied-eval': 'error',
     'no-new-func': 'error',
-    'radix': 'error',
-    
+    radix: 'error',
+
     // Electron-specific
     'no-process-exit': 'off' // Allow process.exit in main process
   },
   globals: {
     // Electron globals
-    '__dirname': 'readonly',
-    '__filename': 'readonly',
-    'process': 'readonly'
+    __dirname: 'readonly',
+    __filename: 'readonly',
+    process: 'readonly'
   },
   overrides: [
     {
@@ -51,8 +45,8 @@ module.exports = {
         node: false
       },
       globals: {
-        'ipcRenderer': 'readonly',
-        'shell': 'readonly'
+        ipcRenderer: 'readonly',
+        shell: 'readonly'
       }
     },
     {
