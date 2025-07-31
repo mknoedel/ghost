@@ -72,10 +72,10 @@ class SelectionMonitor {
 
   async startSwiftBinary() {
     try {
-      const success = await liveSel.startLiveWatcher(this.onSelection, statusData => {
+      const success = await liveSel.startLiveWatcher(this.onSelection, data => {
         // Handle status messages from Swift binary for runtime fallback
-        if (statusData.status === 'isolated' || statusData.status === 'fallback_needed') {
-          const appName = statusData.appName || 'unknown';
+        if (data.app.requiresFallback) {
+          const appName = data.app?.name || 'unknown';
 
           // Cache this app as restricted
           this.restrictedApps.add(appName);

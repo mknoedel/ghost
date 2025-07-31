@@ -9,6 +9,406 @@ import ApplicationServices
 import Cocoa
 import Foundation
 import Quartz
+import IOKit.ps
+
+// MARK: – Data Collection Configuration ----------------------------------------
+
+public struct DataCollectorConfig {
+    public let textSelection: Bool
+    public let focusTracking: Bool
+    public let windowContext: Bool
+    public let browserData: Bool
+    public let systemMetrics: Bool
+    public let inputPatterns: Bool
+    public let timeContext: Bool
+    
+    public init(textSelection: Bool, focusTracking: Bool, windowContext: Bool, browserData: Bool, systemMetrics: Bool, inputPatterns: Bool, timeContext: Bool) {
+        self.textSelection = textSelection
+        self.focusTracking = focusTracking
+        self.windowContext = windowContext
+        self.browserData = browserData
+        self.systemMetrics = systemMetrics
+        self.inputPatterns = inputPatterns
+        self.timeContext = timeContext
+    }
+    
+    public static let `default` = DataCollectorConfig(
+        textSelection: true,
+        focusTracking: true,
+        windowContext: false,
+        browserData: false,
+        systemMetrics: false,
+        inputPatterns: false,
+        timeContext: false
+    )
+    
+    public static let comprehensive = DataCollectorConfig(
+        textSelection: true,
+        focusTracking: true,
+        windowContext: true,
+        browserData: true,
+        systemMetrics: true,
+        inputPatterns: true,
+        timeContext: true
+    )
+}
+
+// MARK: – Data Collector Protocol ---------------------------------------------
+
+protocol DataCollector {
+    var isEnabled: Bool { get }
+    var collectorName: String { get }
+    func collect() -> [String: Any]
+    func shouldCollect(for app: NSRunningApplication?) -> Bool
+}
+
+// MARK: – Data Collector Implementations -------------------------------------
+
+class TextSelectionCollector: DataCollector {
+    let isEnabled: Bool
+    let collectorName = "textSelection"
+    
+    init(enabled: Bool) {
+        self.isEnabled = enabled
+    }
+    
+    func shouldCollect(for app: NSRunningApplication?) -> Bool {
+        return isEnabled && app != nil
+    }
+    
+    func collect() -> [String: Any] {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return [:] }
+        
+        let appElm = AXUIElementCreateApplication(app.processIdentifier)
+        
+        // Try multiple methods to find focused element and extract text
+        if let text = extractTextFromApp(appElm) {
+            return [
+                "text": text,
+                "source": "accessibility",
+                "status": "success"
+            ]
+        }
+        
+        // Only check fallback cache after accessibility methods fail
+        if AppFallbackCache.requiresFallback(app.bundleIdentifier) {
+            return ["status": "fallback_required"]
+        }
+        
+        return ["status": "no_text_available"]
+    }
+    
+    private func extractTextFromApp(_ appElm: AXUIElement) -> String? {
+        // Method 1: Try focused UI element
+        if let focusedElem = getFocusedElement(from: appElm) {
+            if let text = selectedText(from: focusedElem), !text.isEmpty {
+                return text
+            }
+            if let text = getTextFieldContext(from: focusedElem), !text.isEmpty {
+                return text
+            }
+        }
+        
+        // Method 2: Try focused window approach
+        var windowRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appElm, kAXFocusedWindowAttribute as CFString, &windowRef) == .success,
+           let windowObj = windowRef,
+           CFGetTypeID(windowObj) == AXUIElementGetTypeID() {
+            let window = windowObj as! AXUIElement
+            
+            if let focusedInWindow = getFocusedElement(from: window) {
+                if let text = selectedText(from: focusedInWindow), !text.isEmpty {
+                    return text
+                }
+                if let text = getTextFieldContext(from: focusedInWindow), !text.isEmpty {
+                    return text
+                }
+            }
+        }
+        
+        // Method 3: Try main window if focused window fails
+        var mainWindowRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appElm, kAXMainWindowAttribute as CFString, &mainWindowRef) == .success,
+           let mainWindowObj = mainWindowRef,
+           CFGetTypeID(mainWindowObj) == AXUIElementGetTypeID() {
+            let mainWindow = mainWindowObj as! AXUIElement
+            
+            if let focusedInMain = getFocusedElement(from: mainWindow) {
+                if let text = selectedText(from: focusedInMain), !text.isEmpty {
+                    return text
+                }
+                if let text = getTextFieldContext(from: focusedInMain), !text.isEmpty {
+                    return text
+                }
+            }
+        }
+        
+        return nil
+    }
+    
+    private func getFocusedElement(from appElement: AXUIElement) -> AXUIElement? {
+        var focusedRef: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(
+            appElement,
+            kAXFocusedUIElementAttribute as CFString,
+            &focusedRef
+        )
+        
+        if result == .success, let validVal = focusedRef {
+            if CFGetTypeID(validVal) == AXUIElementGetTypeID() {
+                return (validVal as! AXUIElement)
+            }
+        }
+        
+        return nil
+    }
+}
+
+class FocusTrackingCollector: DataCollector {
+    let isEnabled: Bool
+    let collectorName = "focusTracking"
+    
+    private var lastAppInfo: [String: Any]?
+    private var lastFocusChangeTime: Date = Date()
+    
+    init(enabled: Bool) {
+        self.isEnabled = enabled
+    }
+    
+    func shouldCollect(for app: NSRunningApplication?) -> Bool {
+        return isEnabled
+    }
+    
+    func collect() -> [String: Any] {
+        let currentAppInfo = getCurrentAppInfo()
+        let currentTime = Date()
+        
+        // Check if focus has changed
+        let focusChanged = hasAppInfoChanged(current: currentAppInfo, previous: lastAppInfo)
+        
+        var focusData: [String: Any] = [
+            "app": currentAppInfo,
+            "focusChanged": focusChanged
+        ]
+        
+        if focusChanged {
+            let focusDuration = currentTime.timeIntervalSince(lastFocusChangeTime)
+            focusData["focusDuration"] = focusDuration
+            focusData["eventType"] = "focus_change"
+            
+            if let previousAppInfo = lastAppInfo {
+                focusData["previousApp"] = previousAppInfo
+            }
+            
+            lastAppInfo = currentAppInfo
+            lastFocusChangeTime = currentTime
+        } else {
+            let timeSinceLastChange = currentTime.timeIntervalSince(lastFocusChangeTime)
+            focusData["focusDuration"] = timeSinceLastChange
+            focusData["eventType"] = "focus_heartbeat"
+        }
+        
+        return focusData
+    }
+    
+    private func hasAppInfoChanged(current: [String: Any], previous: [String: Any]?) -> Bool {
+        guard let previous = previous else { return true }
+        
+        let currentBundle = current["bundleIdentifier"] as? String ?? ""
+        let previousBundle = previous["bundleIdentifier"] as? String ?? ""
+        let currentPID = current["processIdentifier"] as? Int ?? -1
+        let previousPID = previous["processIdentifier"] as? Int ?? -1
+        
+        return currentBundle != previousBundle || currentPID != previousPID
+    }
+}
+
+class WindowContextCollector: DataCollector {
+    let isEnabled: Bool
+    let collectorName = "windowContext"
+    
+    init(enabled: Bool) {
+        self.isEnabled = enabled
+    }
+    
+    func shouldCollect(for app: NSRunningApplication?) -> Bool {
+        return isEnabled && app != nil
+    }
+    
+    func collect() -> [String: Any] {
+        guard let app = NSWorkspace.shared.frontmostApplication else {
+            return ["error": "No frontmost application"]
+        }
+        
+        var context: [String: Any] = [
+            "appName": app.localizedName ?? "Unknown",
+            "bundleId": app.bundleIdentifier ?? "unknown"
+        ]
+        
+        let appElm = AXUIElementCreateApplication(app.processIdentifier)
+        
+        // Get focused window
+        var windowRef: CFTypeRef?
+        let windowResult = AXUIElementCopyAttributeValue(appElm, kAXFocusedWindowAttribute as CFString, &windowRef)
+        
+        if windowResult == .success,
+           let windowObj = windowRef,
+           CFGetTypeID(windowObj) == AXUIElementGetTypeID() {
+            let window = windowObj as! AXUIElement
+            
+            // Window title
+            var titleRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef) == .success,
+               let title = titleRef as? String {
+                context["windowTitle"] = title
+            }
+            
+            // Window position
+            var positionRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &positionRef) == .success,
+               let position = positionRef {
+                var point = CGPoint.zero
+                if AXValueGetValue(position as! AXValue, .cgPoint, &point) {
+                    context["windowPosition"] = ["x": point.x, "y": point.y]
+                }
+            }
+            
+            // Window size
+            var sizeRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sizeRef) == .success,
+               let size = sizeRef {
+                var cgSize = CGSize.zero
+                if AXValueGetValue(size as! AXValue, .cgSize, &cgSize) {
+                    context["windowSize"] = ["width": cgSize.width, "height": cgSize.height]
+                }
+            }
+        } else {
+            // Accessibility failed - still provide basic info
+            context["accessibilityStatus"] = "failed"
+            context["windowTitle"] = "Accessibility Required"
+        }
+        
+        return context
+    }
+}
+
+class BrowserDataCollector: DataCollector {
+    let isEnabled: Bool
+    let collectorName = "browserData"
+    
+    init(enabled: Bool) {
+        self.isEnabled = enabled
+    }
+    
+    func shouldCollect(for app: NSRunningApplication?) -> Bool {
+        guard isEnabled, let app = app, let bundleId = app.bundleIdentifier else { return false }
+        return bundleId.contains("chrome") || bundleId.contains("safari") || bundleId.contains("firefox") || bundleId.contains("edge")
+    }
+    
+    func collect() -> [String: Any] {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return [:] }
+        
+        let appElm = AXUIElementCreateApplication(app.processIdentifier)
+        var browserContext: [String: Any] = [:]
+        
+        // Get focused window
+        var windowRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appElm, kAXFocusedWindowAttribute as CFString, &windowRef) == .success,
+           let windowObj = windowRef,
+           CFGetTypeID(windowObj) == AXUIElementGetTypeID() {
+            let window = windowObj as! AXUIElement
+            
+            // Try to get URL from address bar
+            var urlRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(window, "AXURL" as CFString, &urlRef) == .success,
+               let url = urlRef as? String {
+                browserContext["currentURL"] = url
+                browserContext["domain"] = extractDomain(from: url)
+            }
+            
+            // Try to get tab information
+            var tabsRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(window, "AXTabs" as CFString, &tabsRef) == .success,
+               let tabs = tabsRef as? [AXUIElement] {
+                browserContext["tabCount"] = tabs.count
+            }
+        }
+        
+        return browserContext
+    }
+    
+    private func extractDomain(from url: String) -> String {
+        guard let urlObj = URL(string: url) else { return "unknown" }
+        return urlObj.host ?? "unknown"
+    }
+}
+
+class SystemMetricsCollector: DataCollector {
+    let isEnabled: Bool
+    let collectorName = "systemMetrics"
+    
+    init(enabled: Bool) {
+        self.isEnabled = enabled
+    }
+    
+    func shouldCollect(for app: NSRunningApplication?) -> Bool {
+        return isEnabled
+    }
+    
+    func collect() -> [String: Any] {
+        var metrics: [String: Any] = [:]
+        
+        // Screen information
+        if let screen = NSScreen.main {
+            metrics["screenSize"] = [
+                "width": screen.frame.width,
+                "height": screen.frame.height
+            ]
+            metrics["screenScale"] = screen.backingScaleFactor
+        }
+        
+        // Battery information (simplified for now)
+        // TODO: Re-implement battery monitoring with proper IOKit integration
+        metrics["batteryLevel"] = "unavailable"
+        metrics["isCharging"] = "unavailable"
+        
+        return metrics
+    }
+}
+
+class TimeContextCollector: DataCollector {
+    let isEnabled: Bool
+    let collectorName = "timeContext"
+    
+    init(enabled: Bool) {
+        self.isEnabled = enabled
+    }
+    
+    func shouldCollect(for app: NSRunningApplication?) -> Bool {
+        return isEnabled
+    }
+    
+    func collect() -> [String: Any] {
+        let now = Date()
+        let calendar = Calendar.current
+        
+        return [
+            "hour": calendar.component(.hour, from: now),
+            "dayOfWeek": calendar.component(.weekday, from: now),
+            "isWeekend": calendar.isDateInWeekend(now),
+            "timeOfDay": getTimeOfDay(hour: calendar.component(.hour, from: now))
+        ]
+    }
+    
+    private func getTimeOfDay(hour: Int) -> String {
+        switch hour {
+        case 5..<12: return "morning"
+        case 12..<17: return "afternoon"
+        case 17..<21: return "evening"
+        default: return "night"
+        }
+    }
+}
 
 // MARK: – util logging ------------------------------------------------------
 
@@ -134,15 +534,39 @@ class AppFallbackCache {
     }
 }
 
-// MARK: – SelectionTap -------------------------------------------------------
-
 public final class SelectionTap {
     private var selectionObserver: AXObserver?
     private var observedElement: AXUIElement?
     private var pollTimer: Timer?
-    private var lastElement: AXUIElement?
+    private var textSelectionTimer: Timer?
     private var tick = 0
     private var lastLoggedApp: String?
+    
+    // Enhanced focus tracking
+    private var lastAppInfo: [String: Any]?
+    private var lastFocusChangeTime: Date = Date()
+    private var focusTrackingTimer: Timer?
+    
+    // Text selection change tracking
+    private var lastTextSelection: String = ""
+    private var lastTextApp: String = ""
+    
+    // Modular data collection system
+    private let config: DataCollectorConfig
+    private let dataCollectors: [DataCollector]
+    
+    // MARK: - Initialization
+    init(config: DataCollectorConfig = .default) {
+        self.config = config
+        self.dataCollectors = [
+            TextSelectionCollector(enabled: config.textSelection),
+            FocusTrackingCollector(enabled: config.focusTracking),
+            WindowContextCollector(enabled: config.windowContext),
+            BrowserDataCollector(enabled: config.browserData),
+            SystemMetricsCollector(enabled: config.systemMetrics),
+            TimeContextCollector(enabled: config.timeContext)
+        ]
+    }
 
     // ---------------------- run -------------------------------------------
     public func run() {
@@ -154,28 +578,170 @@ public final class SelectionTap {
             exit(1)
         }
 
-        if let startElem = focusedElement() { hookSelection(on: startElem) }
-
+        // Unified data collection timer
         pollTimer = Timer
-            .scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-                self?.pollFocus()
+            .scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+                self?.collectAndEmitData()
             }
         if let timer = pollTimer {
             RunLoop.current.add(timer, forMode: .default)
         }
+        
+        // Separate faster timer for text selection changes
+        textSelectionTimer = Timer
+            .scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+                self?.checkTextSelectionChanges()
+            }
+        if let textTimer = textSelectionTimer {
+            RunLoop.current.add(textTimer, forMode: .default)
+        }
+        
+        // Emit initial data
+        collectAndEmitData()
     }
 
-    // ---------------------- polling ---------------------------------------
-    private func pollFocus() {
-        tick += 1
-        guard let elem = focusedElement()
-        else { logDebug("tick #\(tick): no focused element"); return }
-        if lastElement == nil || !CFEqual(lastElement, elem) {
-            logInfo("tick #\(tick): focus changed – re‑hooking")
-            lastElement = elem
-            hookSelection(on: elem)
+    // -------------------- text selection change detection ------------------
+    private func checkTextSelectionChanges() {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return }
+        
+        // Only check text selection for accessible apps
+        if AppFallbackCache.requiresFallback(app.bundleIdentifier) {
+            return
+        }
+        
+        let currentAppId = app.bundleIdentifier ?? "unknown"
+        
+        // Use the TextSelectionCollector to get current text
+        if let textCollector = dataCollectors.first(where: { $0.collectorName == "textSelection" }) as? TextSelectionCollector {
+            let textData = textCollector.collect()
+            
+            if let currentText = textData["text"] as? String, !currentText.isEmpty {
+                // Check if text or app has changed
+                if currentText != lastTextSelection || currentAppId != lastTextApp {
+                    lastTextSelection = currentText
+                    lastTextApp = currentAppId
+                    
+                    // Emit text selection event immediately
+                    var textEvent = textData
+                    textEvent["app"] = getCurrentAppInfo()
+                    textEvent["ts"] = Int(Date().timeIntervalSince1970 * 1000)
+                    textEvent["x"] = mousePoint().0
+                    textEvent["y"] = mousePoint().1
+                    
+                    emitJSON(textEvent)
+                }
+            } else {
+                // Clear last selection if no text is available
+                if !lastTextSelection.isEmpty {
+                    lastTextSelection = ""
+                    lastTextApp = currentAppId
+                }
+            }
         }
     }
+
+    // -------------------- unified data collection -------------------------
+    private func collectAndEmitData() {
+        tick += 1
+        let currentApp = NSWorkspace.shared.frontmostApplication
+        
+        // Collect data from all enabled collectors
+        var collectedData: [String: Any] = [
+            "ts": Int(Date().timeIntervalSince1970 * 1000),
+            "tick": tick
+        ]
+        
+        // Add mouse position (always collected)
+        let (x, y) = mousePoint()
+        collectedData["x"] = x
+        collectedData["y"] = y
+        
+        // Run all collectors
+        for collector in dataCollectors {
+            if collector.shouldCollect(for: currentApp) {
+                let data = collector.collect()
+                if !data.isEmpty {
+                    collectedData[collector.collectorName] = data
+                }
+            }
+        }
+        
+        // Emit the collected data
+        emitCollectedData(collectedData)
+    }
+    
+    private func emitCollectedData(_ data: [String: Any]) {
+        // Determine the type of emission based on collected data
+        if let focusData = data["focusTracking"] as? [String: Any],
+           let eventType = focusData["eventType"] as? String {
+            
+            // This is a focus tracking event
+            var focusEvent = data
+            focusEvent["eventType"] = eventType
+            
+            // Move focus-specific data to top level for backward compatibility
+            if let app = focusData["app"] {
+                focusEvent["app"] = app
+            }
+            if let focusDuration = focusData["focusDuration"] {
+                focusEvent["focusDuration"] = focusDuration
+            }
+            if let previousApp = focusData["previousApp"] {
+                focusEvent["previousApp"] = previousApp
+            }
+            if let focusChanged = focusData["focusChanged"] as? Bool, focusChanged {
+                // Only emit focus change events, not heartbeats unless it's a significant interval
+                if eventType == "focus_change" || 
+                   (eventType == "focus_heartbeat" && shouldEmitHeartbeat(focusData)) {
+                    emitJSON(focusEvent)
+                }
+            }
+        } else if let textData = data["textSelection"] as? [String: Any],
+                  let text = textData["text"] as? String, !text.isEmpty {
+            
+            // This is a text selection event
+            var textEvent = data
+            textEvent["text"] = text
+            textEvent["status"] = textData["status"] ?? "success"
+            textEvent["source"] = textData["source"] ?? "unknown"
+            
+            emitJSON(textEvent)
+        } else {
+            // Check if we have any modular collector data to emit
+            let modularCollectors = ["windowContext", "browserData", "systemMetrics", "timeContext"]
+            let hasModularData = modularCollectors.contains { collectorName in
+                if let collectorData = data[collectorName] as? [String: Any] {
+                    return !collectorData.isEmpty
+                }
+                return false
+            }
+            
+            // Emit comprehensive data if we have any modular collector data
+            if hasModularData {
+                var comprehensiveEvent = data
+                comprehensiveEvent["eventType"] = "comprehensive_data"
+                emitJSON(comprehensiveEvent)
+            }
+        }
+    }
+    
+    private func shouldEmitHeartbeat(_ focusData: [String: Any]) -> Bool {
+        guard let duration = focusData["focusDuration"] as? TimeInterval else { return false }
+        // Emit heartbeat every 10 seconds
+        return duration.truncatingRemainder(dividingBy: 10.0) < 1.0
+    }
+    
+    private func emitJSON(_ data: [String: Any]) {
+        if let jsonData = try? JSONSerialization.data(withJSONObject: data),
+           let jsonString = String(data: jsonData, encoding: .utf8) {
+            fputs(jsonString + "\n", stdout)
+            fflush(stdout)
+        }
+    }
+
+    // ---------------------- legacy methods (deprecated) ------------------
+    // These methods are kept for backward compatibility but are no longer used
+    // in the modular architecture. They may be removed in future versions.
 
     // -------------------- resolve focus -----------------------------------
     private func focusedElement() -> AXUIElement? {
@@ -349,6 +915,10 @@ public final class SelectionTap {
         selectionObserver = obs
         observedElement = element
     }
+
+    // -------------------- legacy focus tracking (deprecated) --------------
+    // This functionality has been moved to FocusTrackingCollector
+    // These methods are kept for reference but are no longer used
 }
 
 // MARK: – Enhanced text extraction helpers ------------------------------------
@@ -518,6 +1088,53 @@ private func textLength(_ elem: AXUIElement) -> Int? {
 // MARK: – emit JSON --------------------------------------------------------
 
 @inline(__always)
+public func getCurrentAppInfo() -> [String: Any] {
+    guard let app = NSWorkspace.shared.frontmostApplication else {
+        return [
+            "name": "Unknown",
+            "bundleIdentifier": "unknown",
+            "processIdentifier": -1,
+            "isAccessible": false,
+            "isIsolated": false,
+            "requiresFallback": true,
+            "focusState": "unfocused",
+            "executableURL": "",
+            "launchDate": 0
+        ]
+    }
+
+    let appElm = AXUIElementCreateApplication(app.processIdentifier)
+
+    // Check if app has accessibility isolation
+    var isoRef: CFTypeRef?
+    let isIsolated = AXUIElementCopyAttributeValue(
+        appElm,
+        "AXIsolatedTree" as CFString,
+        &isoRef
+    ) == .success
+
+    // Check if we can get focused element (indicates accessibility)
+    var focusedRef: CFTypeRef?
+    let isAccessible = AXUIElementCopyAttributeValue(
+        appElm,
+        kAXFocusedUIElementAttribute as CFString,
+        &focusedRef
+    ) == .success
+
+    return [
+        "name": app.localizedName ?? app.bundleIdentifier ?? "Unknown",
+        "bundleIdentifier": app.bundleIdentifier ?? "unknown",
+        "processIdentifier": app.processIdentifier,
+        "isAccessible": isAccessible,
+        "isIsolated": isIsolated,
+        "requiresFallback": isIsolated || !isAccessible,
+        "focusState": "focused",
+        "executableURL": app.executableURL?.path ?? "",
+        "launchDate": app.launchDate?.timeIntervalSince1970 ?? 0
+    ]
+}
+
+@inline(__always)
 public func mousePoint() -> (Int, Int) {
     let p = NSEvent.mouseLocation
     let h = NSScreen.main?.frame.height ?? 1080 // Default height fallback
@@ -527,13 +1144,18 @@ public func mousePoint() -> (Int, Int) {
 @inline(__always)
 public func emit(text: String, status: String = "success") {
     let (x, y) = mousePoint()
-    let obj: [String: Any] = [
+    let appInfo = getCurrentAppInfo()
+    var obj: [String: Any] = [
         "text": text,
         "x": x,
         "y": y,
         "ts": Int(Date().timeIntervalSince1970 * 1000),
         "status": status
     ]
+
+    // Always include app information for focus tracking
+    obj["app"] = appInfo
+
     if
         let data = try? JSONSerialization.data(withJSONObject: obj),
         let jsonString = String(data: data, encoding: .utf8) {
@@ -548,6 +1170,7 @@ public func emitStatus(
     appName: String? = nil
 ) {
     let (x, y) = mousePoint()
+    let appInfo = getCurrentAppInfo()
     var obj: [String: Any] = [
         "status": status,
         "message": message,
@@ -555,9 +1178,15 @@ public func emitStatus(
         "y": y,
         "ts": Int(Date().timeIntervalSince1970 * 1000)
     ]
+
+    // Always include comprehensive app information
+    obj["app"] = appInfo
+
+    // Keep legacy appName for backward compatibility
     if let appName {
         obj["appName"] = appName
     }
+
     if
         let data = try? JSONSerialization.data(withJSONObject: obj),
         let jsonString = String(data: data, encoding: .utf8) {
@@ -567,9 +1196,25 @@ public func emitStatus(
 
 // MARK: – Public API --------------------------------------------------------
 
-public func runSelectionTap() {
-    let tap = SelectionTap()
-    logInfo("SelectionTap launching…")
+public func runSelectionTap(config: DataCollectorConfig = .default) {
+    let tap = SelectionTap(config: config)
+    logInfo("SelectionTap launching with config: \(getConfigDescription(config))")
     tap.run()
     RunLoop.current.run()
+}
+
+public func runSelectionTapComprehensive() {
+    runSelectionTap(config: .comprehensive)
+}
+
+private func getConfigDescription(_ config: DataCollectorConfig) -> String {
+    var enabled: [String] = []
+    if config.textSelection { enabled.append("text") }
+    if config.focusTracking { enabled.append("focus") }
+    if config.windowContext { enabled.append("window") }
+    if config.browserData { enabled.append("browser") }
+    if config.systemMetrics { enabled.append("system") }
+    if config.inputPatterns { enabled.append("input") }
+    if config.timeContext { enabled.append("time") }
+    return enabled.joined(separator: ", ")
 }
