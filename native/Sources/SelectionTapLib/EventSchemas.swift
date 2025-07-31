@@ -142,7 +142,6 @@ public struct TextSelectionEvent: ActivityEvent {
     }
 }
 
-
 public struct BrowserNavigationEvent: ActivityEvent {
     public let eventType: EventType = .browserNavigation
     public let timestamp: Int64
@@ -176,8 +175,6 @@ public struct BrowserNavigationEvent: ActivityEvent {
         return dict
     }
 }
-
-
 
 public struct HeartbeatEvent: ActivityEvent {
     public let eventType: EventType = .heartbeat

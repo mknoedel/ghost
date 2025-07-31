@@ -106,7 +106,7 @@ public class ActivityTracker {
         focusTracker = FocusTracker()
         textTracker = TextTracker()
         browserTracker = config.enableBrowserTracking ? BrowserTracker() : nil
-        
+
         // Set up intelligent trigger system
         setupEventTriggers()
     }
@@ -134,7 +134,7 @@ public class ActivityTracker {
 
         // Start focus monitoring (secondary driver)
         startFocusMonitoring()
-        
+
         // Emit initial events
         checkInitialState()
     }
@@ -147,13 +147,13 @@ public class ActivityTracker {
     }
 
     // MARK: - Event-Driven Architecture
-    
+
     private func setupEventTriggers() {
         // TextTracker will be our primary event driver
         // It detects changes in text fields and can trigger browser checks
         // FocusTracker handles app changes and can trigger initial checks
     }
-    
+
     private func startFocusMonitoring() {
         // Monitor focus changes using NSWorkspace notifications for efficiency
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -163,25 +163,30 @@ public class ActivityTracker {
             object: nil
         )
     }
-    
+
     private func stopFocusMonitoring() {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
-    
-    @objc private func handleFocusChange(_ notification: Notification) {
+
+    @objc
+    private func handleFocusChange(_ notification: Notification) {
         let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
         let mousePos = getMousePosition()
-        
+
         // Check focus changes immediately when app switches
         if config.enableFocusTracking {
-            if let focusEvent = focusTracker.checkForEvents(
-                timestamp: timestamp,
-                mousePosition: mousePos
-            ) {
+            if
+                let focusEvent = focusTracker.checkForEvents(
+                    timestamp: timestamp,
+                    mousePosition: mousePos
+                ) {
                 messageBus.emit(focusEvent)
-                
+
                 // Trigger browser check if this is a browser app
-                if let _ = browserTracker, let focusChangeEvent = focusEvent as? FocusChangeEvent, isBrowserApp(focusChangeEvent.currentApp) {
+                if
+                    let _ = browserTracker,
+                    let focusChangeEvent = focusEvent as? FocusChangeEvent,
+                    isBrowserApp(focusChangeEvent.currentApp) {
                     checkBrowserNavigation(timestamp: timestamp, mousePos: mousePos)
                 }
             }
@@ -191,10 +196,10 @@ public class ActivityTracker {
     private func checkTextSelectionAndTriggerEvents() {
         let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
         let mousePos = getMousePosition()
-        
+
         // Primary text selection check
         checkTextSelection(timestamp: timestamp, mousePos: mousePos)
-        
+
         // Check if we need to trigger browser navigation check
         // This happens when text changes might indicate a page change
         if browserTracker != nil {
@@ -204,17 +209,21 @@ public class ActivityTracker {
             }
         }
     }
-    
+
     private func checkTextSelection(timestamp: Int64, mousePos: (x: Int, y: Int)) {
 
-        if let textEvent = textTracker.checkForEvents(
-            timestamp: timestamp,
-            mousePosition: mousePos
-        ) {
+        if
+            let textEvent = textTracker.checkForEvents(
+                timestamp: timestamp,
+                mousePosition: mousePos
+            ) {
             messageBus.emit(textEvent)
-            
+
             // If text changed in a browser, check for navigation changes
-            if let _ = browserTracker, let textSelectionEvent = textEvent as? TextSelectionEvent, isBrowserApp(textSelectionEvent.app) {
+            if
+                let _ = browserTracker,
+                let textSelectionEvent = textEvent as? TextSelectionEvent,
+                isBrowserApp(textSelectionEvent.app) {
                 checkBrowserNavigation(timestamp: timestamp, mousePos: mousePos)
             }
         }
@@ -227,54 +236,57 @@ public class ActivityTracker {
         if config.enableBrowserTracking { features.append("browser") }
         return features.joined(separator: ", ")
     }
-    
+
     // MARK: - Helper Methods
-    
+
     private func checkBrowserNavigation(timestamp: Int64, mousePos: (x: Int, y: Int)) {
         guard let browserTracker else { return }
-        
-        if let browserEvent = browserTracker.checkForEvents(
-            timestamp: timestamp,
-            mousePosition: mousePos
-        ) {
-            messageBus.emit(browserEvent)
-        }
-    }
-    
-    private func checkInitialState() {
-        let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
-        let mousePos = getMousePosition()
-        
-        // Check initial focus state
-        if config.enableFocusTracking {
-            if let focusEvent = focusTracker.checkForEvents(
+
+        if
+            let browserEvent = browserTracker.checkForEvents(
                 timestamp: timestamp,
                 mousePosition: mousePos
             ) {
+            messageBus.emit(browserEvent)
+        }
+    }
+
+    private func checkInitialState() {
+        let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
+        let mousePos = getMousePosition()
+
+        // Check initial focus state
+        if config.enableFocusTracking {
+            if
+                let focusEvent = focusTracker.checkForEvents(
+                    timestamp: timestamp,
+                    mousePosition: mousePos
+                ) {
                 messageBus.emit(focusEvent)
             }
         }
-        
+
         // Emit initial heartbeat
-        if let heartbeatEvent = focusTracker.createHeartbeat(
-            timestamp: timestamp,
-            mousePosition: mousePos
-        ) {
+        if
+            let heartbeatEvent = focusTracker.createHeartbeat(
+                timestamp: timestamp,
+                mousePosition: mousePos
+            ) {
             messageBus.emit(heartbeatEvent)
         }
     }
-    
+
     private func isBrowserApp(_ app: AppInfo) -> Bool {
         // Use the BrowserTracker's dynamic detection instead of hardcoded list
         guard let browserTracker else { return false }
         return browserTracker.hasBrowserCapabilities(app: app)
     }
-    
+
     private func getCurrentApp() -> AppInfo? {
         guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
             return nil
         }
-        
+
         return AppInfo(
             name: frontmostApp.localizedName ?? "Unknown",
             bundleIdentifier: frontmostApp.bundleIdentifier ?? "unknown",
@@ -421,12 +433,12 @@ class TextTracker: EventTracker {
         if let text = extractFromFocusedElement(appElement: appElement) {
             return text
         }
-        
+
         // Strategy 2: Search window tree for text fields (more aggressive)
         if let text = extractFromWindowTree(appElement: appElement) {
             return text
         }
-        
+
         // Strategy 3: For web apps, search web areas specifically
         if isWebApp(app: app) {
             if let text = extractFromWebAreas(appElement: appElement) {
@@ -436,9 +448,9 @@ class TextTracker: EventTracker {
 
         return nil
     }
-    
+
     // MARK: - Text Extraction Strategies
-    
+
     private func extractFromFocusedElement(appElement: AXUIElement) -> String? {
         var focusedRef: CFTypeRef?
         guard
@@ -450,11 +462,11 @@ class TextTracker: EventTracker {
             let focusedElement = focusedRef,
             CFGetTypeID(focusedElement) == AXUIElementGetTypeID()
         else { return nil }
-        
+
         let axElement = focusedElement as! AXUIElement
         return extractTextFromElement(axElement)
     }
-    
+
     private func extractFromWindowTree(appElement: AXUIElement) -> String? {
         // Get focused window
         var windowRef: CFTypeRef?
@@ -467,13 +479,13 @@ class TextTracker: EventTracker {
             let window = windowRef,
             CFGetTypeID(window) == AXUIElementGetTypeID()
         else { return nil }
-        
+
         let axWindow = window as! AXUIElement
-        
+
         // Search for text fields in the window tree
         return findTextInElementTree(element: axWindow, depth: 0, maxDepth: 8)
     }
-    
+
     private func extractFromWebAreas(appElement: AXUIElement) -> String? {
         // Get focused window first
         var windowRef: CFTypeRef?
@@ -486,13 +498,13 @@ class TextTracker: EventTracker {
             let window = windowRef,
             CFGetTypeID(window) == AXUIElementGetTypeID()
         else { return nil }
-        
+
         let axWindow = window as! AXUIElement
-        
+
         // Find web areas (for browser-based apps)
         return findTextInWebAreas(element: axWindow, depth: 0, maxDepth: 10)
     }
-    
+
     private func extractTextFromElement(_ element: AXUIElement) -> String? {
         // Try different text attributes in order of preference
         let textAttributes = [
@@ -502,135 +514,197 @@ class TextTracker: EventTracker {
             kAXDescriptionAttribute,
             "AXPlaceholderValue" // For placeholder text in inputs
         ]
-        
+
         for attribute in textAttributes {
             var textRef: CFTypeRef?
-            if AXUIElementCopyAttributeValue(element, attribute as CFString, &textRef) == .success,
-               let text = textRef as? String, !text.isEmpty {
+            if
+                AXUIElementCopyAttributeValue(element, attribute as CFString, &textRef) ==
+                .success,
+                let text = textRef as? String, !text.isEmpty {
                 // Limit text length to prevent huge captures
                 return text.count > 500 ? String(text.prefix(500)) : text
             }
         }
-        
+
         return nil
     }
-    
-    private func findTextInElementTree(element: AXUIElement, depth: Int, maxDepth: Int) -> String? {
+
+    private func findTextInElementTree(
+        element: AXUIElement,
+        depth: Int,
+        maxDepth: Int
+    )
+        -> String? {
         guard depth < maxDepth else { return nil }
-        
+
         // Check if current element has text
         if let text = extractTextFromElement(element) {
             return text
         }
-        
+
         // Check role - prioritize text-related elements
         var roleRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success,
-           let role = roleRef as? String {
-            
+        if
+            AXUIElementCopyAttributeValue(
+                element,
+                kAXRoleAttribute as CFString,
+                &roleRef
+            ) == .success,
+            let role = roleRef as? String {
+
             // Prioritize text input elements
             let textRoles = [
                 "AXTextField", "AXTextArea", "AXComboBox", "AXStaticText",
-                "AXGroup", "AXScrollArea" // Groups and scroll areas might contain text fields
+                "AXGroup",
+                "AXScrollArea" // Groups and scroll areas might contain text fields
             ]
-            
+
             if textRoles.contains(role) {
                 if let text = extractTextFromElement(element) {
                     return text
                 }
             }
         }
-        
+
         // Recurse into children
         var childrenRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
-           let children = childrenRef as? [AXUIElement] {
-            
+        if
+            AXUIElementCopyAttributeValue(
+                element,
+                kAXChildrenAttribute as CFString,
+                &childrenRef
+            ) == .success,
+            let children = childrenRef as? [AXUIElement] {
+
             // Search children, but prioritize likely text containers
             for child in children {
-                if let text = findTextInElementTree(element: child, depth: depth + 1, maxDepth: maxDepth) {
+                if
+                    let text = findTextInElementTree(
+                        element: child,
+                        depth: depth + 1,
+                        maxDepth: maxDepth
+                    ) {
                     return text
                 }
             }
         }
-        
+
         return nil
     }
-    
-    private func findTextInWebAreas(element: AXUIElement, depth: Int, maxDepth: Int) -> String? {
+
+    private func findTextInWebAreas(
+        element: AXUIElement,
+        depth: Int,
+        maxDepth: Int
+    )
+        -> String? {
         guard depth < maxDepth else { return nil }
-        
+
         // Check if this is a web area
         var roleRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success,
-           let role = roleRef as? String, role == "AXWebArea" {
-            
+        if
+            AXUIElementCopyAttributeValue(
+                element,
+                kAXRoleAttribute as CFString,
+                &roleRef
+            ) == .success,
+            let role = roleRef as? String, role == "AXWebArea" {
+
             // Search for text inputs within web area
             if let text = findWebTextInputs(webArea: element, depth: 0, maxDepth: 6) {
                 return text
             }
         }
-        
+
         // Recurse into children to find web areas
         var childrenRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
-           let children = childrenRef as? [AXUIElement] {
+        if
+            AXUIElementCopyAttributeValue(
+                element,
+                kAXChildrenAttribute as CFString,
+                &childrenRef
+            ) == .success,
+            let children = childrenRef as? [AXUIElement] {
             for child in children {
-                if let text = findTextInWebAreas(element: child, depth: depth + 1, maxDepth: maxDepth) {
+                if
+                    let text = findTextInWebAreas(
+                        element: child,
+                        depth: depth + 1,
+                        maxDepth: maxDepth
+                    ) {
                     return text
                 }
             }
         }
-        
+
         return nil
     }
-    
-    private func findWebTextInputs(webArea: AXUIElement, depth: Int, maxDepth: Int) -> String? {
+
+    private func findWebTextInputs(
+        webArea: AXUIElement,
+        depth: Int,
+        maxDepth: Int
+    )
+        -> String? {
         guard depth < maxDepth else { return nil }
-        
+
         // Check current element for text
         if let text = extractTextFromElement(webArea) {
             return text
         }
-        
+
         // Look for web-specific text input roles
         var roleRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(webArea, kAXRoleAttribute as CFString, &roleRef) == .success,
-           let role = roleRef as? String {
-            
+        if
+            AXUIElementCopyAttributeValue(
+                webArea,
+                kAXRoleAttribute as CFString,
+                &roleRef
+            ) == .success,
+            let role = roleRef as? String {
+
             let webTextRoles = [
                 "AXTextField", "AXTextArea", "AXComboBox", "AXGroup",
                 "AXGenericContainer", "AXList", "AXListItem" // Common in web apps
             ]
-            
+
             if webTextRoles.contains(role) {
                 if let text = extractTextFromElement(webArea) {
                     return text
                 }
             }
         }
-        
+
         // Recurse into children
         var childrenRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(webArea, kAXChildrenAttribute as CFString, &childrenRef) == .success,
-           let children = childrenRef as? [AXUIElement] {
+        if
+            AXUIElementCopyAttributeValue(
+                webArea,
+                kAXChildrenAttribute as CFString,
+                &childrenRef
+            ) == .success,
+            let children = childrenRef as? [AXUIElement] {
             for child in children {
-                if let text = findWebTextInputs(webArea: child, depth: depth + 1, maxDepth: maxDepth) {
+                if
+                    let text = findWebTextInputs(
+                        webArea: child,
+                        depth: depth + 1,
+                        maxDepth: maxDepth
+                    ) {
                     return text
                 }
             }
         }
-        
+
         return nil
     }
-    
+
     private func isWebApp(app: AppInfo) -> Bool {
         // Check if this is a browser or web-based application
         let webBrowsers = ["Chrome", "Safari", "Firefox", "Edge", "Arc", "Brave"]
         return webBrowsers.contains { app.bundleIdentifier.contains($0) }
     }
 }
-
 
 // MARK: – Browser Tracker
 
@@ -1129,7 +1203,7 @@ class BrowserTracker: EventTracker {
             lastChecked: Date()
         )
     }
-    
+
     func hasBrowserCapabilities(app: AppInfo) -> Bool {
         let capabilities = getBrowserCapabilities(for: app)
         return capabilities.hasURLSupport || capabilities.hasTitleSupport
@@ -1209,8 +1283,6 @@ class BrowserTracker: EventTracker {
         }
     }
 }
-
-
 
 // MARK: – Utilities
 
