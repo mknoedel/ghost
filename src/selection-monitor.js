@@ -11,7 +11,6 @@ class SelectionMonitor {
     this.swiftActive = false;
     this.appleScriptActive = false;
     this.restrictedApps = new Set();
-    this.fallbackStarted = false;
   }
 
   async start() {
@@ -20,26 +19,32 @@ class SelectionMonitor {
       return;
     }
 
-    this.logger.info('Starting...');
+    this.logger.info('Starting both Swift binary and AppleScript monitoring...');
 
-    // Try Swift binary first
-    const swiftSuccess = await this.startSwiftBinary();
-    if (swiftSuccess) {
+    // Start both Swift binary and AppleScript simultaneously
+    const swiftPromise = this.startSwiftBinary();
+    const appleScriptPromise = this.startAppleScript();
+
+    // Wait for both to complete initialization
+    const [swiftSuccess, appleScriptSuccess] = await Promise.all([
+      swiftPromise,
+      appleScriptPromise
+    ]);
+
+    // Check results and update status
+    if (swiftSuccess || appleScriptSuccess) {
       this.isRunning = true;
-      this.logger.success('Started with Swift binary');
-    } else {
-      // Fallback to AppleScript if Swift completely fails
-      this.logger.warn('Swift binary failed, falling back to AppleScript...');
-      const appleScriptSuccess = await this.startAppleScript();
-      if (appleScriptSuccess) {
-        this.isRunning = true;
-        this.logger.success('Started with AppleScript (fallback)');
-      } else {
-        this.logger.warn('All strategies failed, manual mode only');
-      }
-    }
 
-    // Manual trigger removed
+      if (swiftSuccess && appleScriptSuccess) {
+        this.logger.success('Started both Swift binary and AppleScript monitoring');
+      } else if (swiftSuccess) {
+        this.logger.success('Started Swift binary monitoring (AppleScript failed)');
+      } else {
+        this.logger.success('Started AppleScript monitoring (Swift binary failed)');
+      }
+    } else {
+      this.logger.warn('All monitoring strategies failed, manual mode only');
+    }
   }
 
   stop() {
@@ -70,7 +75,7 @@ class SelectionMonitor {
   async startSwiftBinary() {
     try {
       const success = await liveSel.startLiveWatcher(this.onSelection, data => {
-        // Handle status messages from Swift binary for runtime fallback
+        // Handle status messages from Swift binary
         if (data.app?.requiresFallback) {
           const appName =
             data.app.name ||
@@ -80,15 +85,7 @@ class SelectionMonitor {
 
           // Cache this app as restricted
           this.restrictedApps.add(appName);
-          this.logger.debug(
-            `Swift binary limitation detected for ${appName}, starting AppleScript fallback...`
-          );
-
-          // Start AppleScript fallback if not already running
-          if (!this.appleScriptActive && !this.fallbackStarted) {
-            this.fallbackStarted = true;
-            this.startAppleScript();
-          }
+          this.logger.debug(`Swift binary limitation detected for ${appName}`);
         }
       });
 
