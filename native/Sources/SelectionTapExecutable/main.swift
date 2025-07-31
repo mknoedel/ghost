@@ -2,7 +2,7 @@ import SelectionTapLib
 import Foundation
 
 // Parse command line arguments for configuration
-func parseConfig() -> DataCollectorConfig {
+func parseConfig() -> ActivityTrackerConfig {
     let args = CommandLine.arguments
     
     // Check for comprehensive mode
@@ -10,58 +10,22 @@ func parseConfig() -> DataCollectorConfig {
         return .comprehensive
     }
     
-    // Check for custom configuration flags
-    var config = DataCollectorConfig.default
+    // Build custom configuration
+    let enableTextSelection = !args.contains("--focus-only")
+    let enableFocusTracking = true
+    let enableWindowTracking = args.contains("--window-tracking")
+    let enableBrowserTracking = args.contains("--browser-tracking")
+    let enableSystemMetrics = args.contains("--system-metrics")
+    let enableUserActivity = args.contains("--user-activity")
     
-    if args.contains("--window-context") {
-        config = DataCollectorConfig(
-            textSelection: config.textSelection,
-            focusTracking: config.focusTracking,
-            windowContext: true,
-            browserData: config.browserData,
-            systemMetrics: config.systemMetrics,
-            inputPatterns: config.inputPatterns,
-            timeContext: config.timeContext
-        )
-    }
-    
-    if args.contains("--browser-data") {
-        config = DataCollectorConfig(
-            textSelection: config.textSelection,
-            focusTracking: config.focusTracking,
-            windowContext: config.windowContext,
-            browserData: true,
-            systemMetrics: config.systemMetrics,
-            inputPatterns: config.inputPatterns,
-            timeContext: config.timeContext
-        )
-    }
-    
-    if args.contains("--system-metrics") {
-        config = DataCollectorConfig(
-            textSelection: config.textSelection,
-            focusTracking: config.focusTracking,
-            windowContext: config.windowContext,
-            browserData: config.browserData,
-            systemMetrics: true,
-            inputPatterns: config.inputPatterns,
-            timeContext: config.timeContext
-        )
-    }
-    
-    if args.contains("--time-context") {
-        config = DataCollectorConfig(
-            textSelection: config.textSelection,
-            focusTracking: config.focusTracking,
-            windowContext: config.windowContext,
-            browserData: config.browserData,
-            systemMetrics: config.systemMetrics,
-            inputPatterns: config.inputPatterns,
-            timeContext: true
-        )
-    }
-    
-    return config
+    return ActivityTrackerConfig(
+        enableTextSelection: enableTextSelection,
+        enableFocusTracking: enableFocusTracking,
+        enableWindowTracking: enableWindowTracking,
+        enableBrowserTracking: enableBrowserTracking,
+        enableSystemMetrics: enableSystemMetrics,
+        enableUserActivity: enableUserActivity
+    )
 }
 
 // Show help information
@@ -72,14 +36,15 @@ func showHelp() {
     Usage: SelectionTap [options]
     
     Options:
-      --comprehensive      Enable all data collectors
-      --window-context     Enable window title, position, and size tracking
-      --browser-data       Enable URL and tab information for browsers
+      --comprehensive      Enable all tracking features
+      --window-tracking    Enable window title, position, and size tracking
+      --browser-tracking   Enable URL and tab information for browsers
       --system-metrics     Enable system resource and battery monitoring
-      --time-context       Enable time-of-day and temporal analysis
+      --user-activity      Enable user activity pattern tracking
+      --focus-only         Disable text selection, focus tracking only
       --help              Show this help message
     
-    Default: Text selection and focus tracking only
+    Default: Text selection and focus tracking with structured events
     """)
 }
 
@@ -90,4 +55,4 @@ if CommandLine.arguments.contains("--help") {
 }
 
 let config = parseConfig()
-runSelectionTap(config: config)
+runActivityTracker(config: config)

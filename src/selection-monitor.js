@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const liveSel = require('./mac-live-selection');
 const macSelection = require('./mac-selection');
 const Logger = require('./logger');
@@ -68,14 +69,16 @@ class SelectionMonitor {
     this.logger.info('Stopped');
   }
 
-  // Manual trigger functionality removed
-
   async startSwiftBinary() {
     try {
       const success = await liveSel.startLiveWatcher(this.onSelection, data => {
         // Handle status messages from Swift binary for runtime fallback
-        if (data.app.requiresFallback) {
-          const appName = data.app?.name || 'unknown';
+        if (data.app?.requiresFallback) {
+          const appName =
+            data.app.name ||
+            data.app.bundleIdentifier ||
+            data.app.executableURL ||
+            `unknown-${this._hashObject(data.app)}`;
 
           // Cache this app as restricted
           this.restrictedApps.add(appName);
@@ -113,6 +116,10 @@ class SelectionMonitor {
       this.logger.error('AppleScript error:', error.message);
     }
     return false;
+  }
+
+  _hashObject(obj) {
+    return crypto.createHash('md5').update(JSON.stringify(obj)).digest('hex').slice(0, 8);
   }
 }
 

@@ -20,8 +20,7 @@ let package = Package(
         .target(
             name: "SelectionTapLib",
             dependencies: [],
-            path: "Sources/SelectionTapLib",
-            sources: ["SelectionTap.swift"]
+            path: "Sources/SelectionTapLib"
         ),
         .executableTarget(
             name: "SelectionTapExecutable",
