@@ -1,15 +1,15 @@
-import SelectionTapLib
 import Foundation
+import SelectionTapLib
 
 // Parse command line arguments for configuration
 func parseConfig() -> ActivityTrackerConfig {
     let args = CommandLine.arguments
-    
+
     // Check for comprehensive mode
     if args.contains("--comprehensive") {
         return .comprehensive
     }
-    
+
     // Build custom configuration
     let enableTextSelection = !args.contains("--focus-only")
     let enableFocusTracking = true
@@ -17,7 +17,7 @@ func parseConfig() -> ActivityTrackerConfig {
     let enableBrowserTracking = args.contains("--browser-tracking")
     let enableSystemMetrics = args.contains("--system-metrics")
     let enableUserActivity = args.contains("--user-activity")
-    
+
     return ActivityTrackerConfig(
         enableTextSelection: enableTextSelection,
         enableFocusTracking: enableFocusTracking,
@@ -32,9 +32,9 @@ func parseConfig() -> ActivityTrackerConfig {
 func showHelp() {
     print("""
     SelectionTap - Configurable macOS Activity Monitor
-    
+
     Usage: SelectionTap [options]
-    
+
     Options:
       --comprehensive      Enable all tracking features
       --window-tracking    Enable window title, position, and size tracking
@@ -43,7 +43,7 @@ func showHelp() {
       --user-activity      Enable user activity pattern tracking
       --focus-only         Disable text selection, focus tracking only
       --help              Show this help message
-    
+
     Default: Text selection and focus tracking with structured events
     """)
 }

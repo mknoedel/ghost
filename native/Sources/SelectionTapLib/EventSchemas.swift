@@ -16,17 +16,17 @@ public enum EventType: String, CaseIterable {
     case browserNavigation = "browser_navigation"
     case systemMetrics = "system_metrics"
     case userActivity = "user_activity"
-    case heartbeat = "heartbeat"
-    
+    case heartbeat
+
     public var description: String {
         switch self {
-        case .focusChange: return "Application focus changed"
-        case .textSelection: return "Text selected or input detected"
-        case .windowUpdate: return "Window properties changed"
-        case .browserNavigation: return "Browser URL or tab changed"
-        case .systemMetrics: return "System resource metrics"
-        case .userActivity: return "User input activity detected"
-        case .heartbeat: return "Periodic activity heartbeat"
+        case .focusChange: "Application focus changed"
+        case .textSelection: "Text selected or input detected"
+        case .windowUpdate: "Window properties changed"
+        case .browserNavigation: "Browser URL or tab changed"
+        case .systemMetrics: "System resource metrics"
+        case .userActivity: "User input activity detected"
+        case .heartbeat: "Periodic activity heartbeat"
         }
     }
 }
@@ -51,10 +51,17 @@ public struct AppInfo: Codable {
     public let focusState: String
     public let executableURL: String
     public let launchDate: Double
-    
-    public init(name: String, bundleIdentifier: String, processIdentifier: Int32, 
-                isAccessible: Bool, requiresFallback: Bool,
-                focusState: String, executableURL: String, launchDate: Double) {
+
+    public init(
+        name: String,
+        bundleIdentifier: String,
+        processIdentifier: Int32,
+        isAccessible: Bool,
+        requiresFallback: Bool,
+        focusState: String,
+        executableURL: String,
+        launchDate: Double
+    ) {
         self.name = name
         self.bundleIdentifier = bundleIdentifier
         self.processIdentifier = processIdentifier
@@ -64,9 +71,9 @@ public struct AppInfo: Codable {
         self.executableURL = executableURL
         self.launchDate = launchDate
     }
-    
+
     public func toDictionary() -> [String: Any] {
-        return [
+        [
             "name": name,
             "bundleIdentifier": bundleIdentifier,
             "processIdentifier": processIdentifier,
@@ -85,12 +92,12 @@ public struct FocusChangeEvent: ActivityEvent {
     public let eventType: EventType = .focusChange
     public let timestamp: Int64
     public let mousePosition: (x: Int, y: Int)
-    
+
     public let currentApp: AppInfo
     public let previousApp: AppInfo?
     public let focusDuration: Double
     public let sessionId: String
-    
+
     public func toDictionary() -> [String: Any] {
         var dict: [String: Any] = [
             "eventType": eventType.rawValue,
@@ -101,11 +108,11 @@ public struct FocusChangeEvent: ActivityEvent {
             "focusDuration": focusDuration,
             "sessionId": sessionId
         ]
-        
+
         if let previous = previousApp {
             dict["previousApp"] = previous.toDictionary()
         }
-        
+
         return dict
     }
 }
@@ -114,13 +121,13 @@ public struct TextSelectionEvent: ActivityEvent {
     public let eventType: EventType = .textSelection
     public let timestamp: Int64
     public let mousePosition: (x: Int, y: Int)
-    
+
     public let app: AppInfo
     public let text: String
     public let selectionLength: Int
     public let source: String // "accessibility", "clipboard", "fallback"
     public let context: String? // surrounding text context
-    
+
     public func toDictionary() -> [String: Any] {
         var dict: [String: Any] = [
             "eventType": eventType.rawValue,
@@ -132,11 +139,11 @@ public struct TextSelectionEvent: ActivityEvent {
             "selectionLength": selectionLength,
             "source": source
         ]
-        
-        if let context = context {
+
+        if let context {
             dict["context"] = context
         }
-        
+
         return dict
     }
 }
@@ -145,15 +152,15 @@ public struct WindowUpdateEvent: ActivityEvent {
     public let eventType: EventType = .windowUpdate
     public let timestamp: Int64
     public let mousePosition: (x: Int, y: Int)
-    
+
     public let app: AppInfo
     public let windowTitle: String
     public let windowPosition: (x: Double, y: Double)
     public let windowSize: (width: Double, height: Double)
     public let isMainWindow: Bool
-    
+
     public func toDictionary() -> [String: Any] {
-        return [
+        [
             "eventType": eventType.rawValue,
             "timestamp": timestamp,
             "x": mousePosition.x,
@@ -171,13 +178,13 @@ public struct BrowserNavigationEvent: ActivityEvent {
     public let eventType: EventType = .browserNavigation
     public let timestamp: Int64
     public let mousePosition: (x: Int, y: Int)
-    
+
     public let app: AppInfo
     public let currentURL: String
     public let domain: String
     public let tabCount: Int?
     public let pageTitle: String?
-    
+
     public func toDictionary() -> [String: Any] {
         var dict: [String: Any] = [
             "eventType": eventType.rawValue,
@@ -188,15 +195,15 @@ public struct BrowserNavigationEvent: ActivityEvent {
             "currentURL": currentURL,
             "domain": domain
         ]
-        
-        if let tabCount = tabCount {
+
+        if let tabCount {
             dict["tabCount"] = tabCount
         }
-        
-        if let pageTitle = pageTitle {
+
+        if let pageTitle {
             dict["pageTitle"] = pageTitle
         }
-        
+
         return dict
     }
 }
@@ -205,13 +212,13 @@ public struct SystemMetricsEvent: ActivityEvent {
     public let eventType: EventType = .systemMetrics
     public let timestamp: Int64
     public let mousePosition: (x: Int, y: Int)
-    
+
     public let batteryLevel: Double?
     public let isCharging: Bool?
     public let screenSize: (width: Double, height: Double)
     public let screenScale: Double
     public let memoryPressure: String?
-    
+
     public func toDictionary() -> [String: Any] {
         var dict: [String: Any] = [
             "eventType": eventType.rawValue,
@@ -221,19 +228,19 @@ public struct SystemMetricsEvent: ActivityEvent {
             "screenSize": ["width": screenSize.width, "height": screenSize.height],
             "screenScale": screenScale
         ]
-        
-        if let batteryLevel = batteryLevel {
+
+        if let batteryLevel {
             dict["batteryLevel"] = batteryLevel
         }
-        
-        if let isCharging = isCharging {
+
+        if let isCharging {
             dict["isCharging"] = isCharging
         }
-        
-        if let memoryPressure = memoryPressure {
+
+        if let memoryPressure {
             dict["memoryPressure"] = memoryPressure
         }
-        
+
         return dict
     }
 }
@@ -242,16 +249,16 @@ public struct UserActivityEvent: ActivityEvent {
     public let eventType: EventType = .userActivity
     public let timestamp: Int64
     public let mousePosition: (x: Int, y: Int)
-    
+
     public let app: AppInfo
     public let activityType: String // "typing", "clicking", "scrolling", "idle"
     public let intensity: Double // 0.0 to 1.0
     public let duration: Double
     public let timeOfDay: String // "morning", "afternoon", "evening", "night"
     public let isWeekend: Bool
-    
+
     public func toDictionary() -> [String: Any] {
-        return [
+        [
             "eventType": eventType.rawValue,
             "timestamp": timestamp,
             "x": mousePosition.x,
@@ -270,14 +277,14 @@ public struct HeartbeatEvent: ActivityEvent {
     public let eventType: EventType = .heartbeat
     public let timestamp: Int64
     public let mousePosition: (x: Int, y: Int)
-    
+
     public let app: AppInfo
     public let sessionDuration: Double
     public let activeSessions: [String: Double] // bundleId -> duration
     public let totalActiveTime: Double
-    
+
     public func toDictionary() -> [String: Any] {
-        return [
+        [
             "eventType": eventType.rawValue,
             "timestamp": timestamp,
             "x": mousePosition.x,
@@ -293,53 +300,64 @@ public struct HeartbeatEvent: ActivityEvent {
 // MARK: - Event Factory
 
 public class EventFactory {
-    public static func createEvent(type: EventType, data: [String: Any]) -> ActivityEvent? {
+    public static func createEvent(
+        type: EventType,
+        data: [String: Any]
+    )
+        -> ActivityEvent? {
         switch type {
         case .focusChange:
-            return createFocusChangeEvent(from: data)
+            createFocusChangeEvent(from: data)
         case .textSelection:
-            return createTextSelectionEvent(from: data)
+            createTextSelectionEvent(from: data)
         case .windowUpdate:
-            return createWindowUpdateEvent(from: data)
+            createWindowUpdateEvent(from: data)
         case .browserNavigation:
-            return createBrowserNavigationEvent(from: data)
+            createBrowserNavigationEvent(from: data)
         case .systemMetrics:
-            return createSystemMetricsEvent(from: data)
+            createSystemMetricsEvent(from: data)
         case .userActivity:
-            return createUserActivityEvent(from: data)
+            createUserActivityEvent(from: data)
         case .heartbeat:
-            return createHeartbeatEvent(from: data)
+            createHeartbeatEvent(from: data)
         }
     }
-    
+
     // Factory methods for each event type
-    private static func createFocusChangeEvent(from data: [String: Any]) -> FocusChangeEvent? {
+    private static func createFocusChangeEvent(from data: [String: Any])
+        -> FocusChangeEvent? {
         // Implementation would extract and validate required fields
         // This is a simplified version - full implementation would include validation
-        return nil
+        nil
     }
-    
-    private static func createTextSelectionEvent(from data: [String: Any]) -> TextSelectionEvent? {
-        return nil
+
+    private static func createTextSelectionEvent(from data: [String: Any])
+        -> TextSelectionEvent? {
+        nil
     }
-    
-    private static func createWindowUpdateEvent(from data: [String: Any]) -> WindowUpdateEvent? {
-        return nil
+
+    private static func createWindowUpdateEvent(from data: [String: Any])
+        -> WindowUpdateEvent? {
+        nil
     }
-    
-    private static func createBrowserNavigationEvent(from data: [String: Any]) -> BrowserNavigationEvent? {
-        return nil
+
+    private static func createBrowserNavigationEvent(from data: [String: Any])
+        -> BrowserNavigationEvent? {
+        nil
     }
-    
-    private static func createSystemMetricsEvent(from data: [String: Any]) -> SystemMetricsEvent? {
-        return nil
+
+    private static func createSystemMetricsEvent(from data: [String: Any])
+        -> SystemMetricsEvent? {
+        nil
     }
-    
-    private static func createUserActivityEvent(from data: [String: Any]) -> UserActivityEvent? {
-        return nil
+
+    private static func createUserActivityEvent(from data: [String: Any])
+        -> UserActivityEvent? {
+        nil
     }
-    
-    private static func createHeartbeatEvent(from data: [String: Any]) -> HeartbeatEvent? {
-        return nil
+
+    private static func createHeartbeatEvent(from data: [String: Any])
+        -> HeartbeatEvent? {
+        nil
     }
 }
