@@ -12,20 +12,14 @@ import Foundation
 public enum EventType: String, CaseIterable {
     case focusChange = "focus_change"
     case textSelection = "text_selection"
-    case windowUpdate = "window_update"
     case browserNavigation = "browser_navigation"
-    case systemMetrics = "system_metrics"
-    case userActivity = "user_activity"
     case heartbeat
 
     public var description: String {
         switch self {
         case .focusChange: "Application focus changed"
         case .textSelection: "Text selected or input detected"
-        case .windowUpdate: "Window properties changed"
         case .browserNavigation: "Browser URL or tab changed"
-        case .systemMetrics: "System resource metrics"
-        case .userActivity: "User input activity detected"
         case .heartbeat: "Periodic activity heartbeat"
         }
     }
@@ -148,31 +142,6 @@ public struct TextSelectionEvent: ActivityEvent {
     }
 }
 
-public struct WindowUpdateEvent: ActivityEvent {
-    public let eventType: EventType = .windowUpdate
-    public let timestamp: Int64
-    public let mousePosition: (x: Int, y: Int)
-
-    public let app: AppInfo
-    public let windowTitle: String
-    public let windowPosition: (x: Double, y: Double)
-    public let windowSize: (width: Double, height: Double)
-    public let isMainWindow: Bool
-
-    public func toDictionary() -> [String: Any] {
-        [
-            "eventType": eventType.rawValue,
-            "timestamp": timestamp,
-            "x": mousePosition.x,
-            "y": mousePosition.y,
-            "app": app.toDictionary(),
-            "windowTitle": windowTitle,
-            "windowPosition": ["x": windowPosition.x, "y": windowPosition.y],
-            "windowSize": ["width": windowSize.width, "height": windowSize.height],
-            "isMainWindow": isMainWindow
-        ]
-    }
-}
 
 public struct BrowserNavigationEvent: ActivityEvent {
     public let eventType: EventType = .browserNavigation
@@ -208,70 +177,7 @@ public struct BrowserNavigationEvent: ActivityEvent {
     }
 }
 
-public struct SystemMetricsEvent: ActivityEvent {
-    public let eventType: EventType = .systemMetrics
-    public let timestamp: Int64
-    public let mousePosition: (x: Int, y: Int)
 
-    public let batteryLevel: Double?
-    public let isCharging: Bool?
-    public let screenSize: (width: Double, height: Double)
-    public let screenScale: Double
-    public let memoryPressure: String?
-
-    public func toDictionary() -> [String: Any] {
-        var dict: [String: Any] = [
-            "eventType": eventType.rawValue,
-            "timestamp": timestamp,
-            "x": mousePosition.x,
-            "y": mousePosition.y,
-            "screenSize": ["width": screenSize.width, "height": screenSize.height],
-            "screenScale": screenScale
-        ]
-
-        if let batteryLevel {
-            dict["batteryLevel"] = batteryLevel
-        }
-
-        if let isCharging {
-            dict["isCharging"] = isCharging
-        }
-
-        if let memoryPressure {
-            dict["memoryPressure"] = memoryPressure
-        }
-
-        return dict
-    }
-}
-
-public struct UserActivityEvent: ActivityEvent {
-    public let eventType: EventType = .userActivity
-    public let timestamp: Int64
-    public let mousePosition: (x: Int, y: Int)
-
-    public let app: AppInfo
-    public let activityType: String // "typing", "clicking", "scrolling", "idle"
-    public let intensity: Double // 0.0 to 1.0
-    public let duration: Double
-    public let timeOfDay: String // "morning", "afternoon", "evening", "night"
-    public let isWeekend: Bool
-
-    public func toDictionary() -> [String: Any] {
-        [
-            "eventType": eventType.rawValue,
-            "timestamp": timestamp,
-            "x": mousePosition.x,
-            "y": mousePosition.y,
-            "app": app.toDictionary(),
-            "activityType": activityType,
-            "intensity": intensity,
-            "duration": duration,
-            "timeOfDay": timeOfDay,
-            "isWeekend": isWeekend
-        ]
-    }
-}
 
 public struct HeartbeatEvent: ActivityEvent {
     public let eventType: EventType = .heartbeat
@@ -310,14 +216,8 @@ public class EventFactory {
             createFocusChangeEvent(from: data)
         case .textSelection:
             createTextSelectionEvent(from: data)
-        case .windowUpdate:
-            createWindowUpdateEvent(from: data)
         case .browserNavigation:
             createBrowserNavigationEvent(from: data)
-        case .systemMetrics:
-            createSystemMetricsEvent(from: data)
-        case .userActivity:
-            createUserActivityEvent(from: data)
         case .heartbeat:
             createHeartbeatEvent(from: data)
         }
@@ -336,23 +236,8 @@ public class EventFactory {
         nil
     }
 
-    private static func createWindowUpdateEvent(from data: [String: Any])
-        -> WindowUpdateEvent? {
-        nil
-    }
-
     private static func createBrowserNavigationEvent(from data: [String: Any])
         -> BrowserNavigationEvent? {
-        nil
-    }
-
-    private static func createSystemMetricsEvent(from data: [String: Any])
-        -> SystemMetricsEvent? {
-        nil
-    }
-
-    private static func createUserActivityEvent(from data: [String: Any])
-        -> UserActivityEvent? {
         nil
     }
 

@@ -9,10 +9,7 @@ let child = null;
 const EVENT_EMOJIS = {
   focus_change: '🔄',
   text_selection: '📝',
-  window_update: '🪟',
   browser_navigation: '🌐',
-  system_metrics: '📊',
-  user_activity: '👤',
   heartbeat: '💓'
 };
 
@@ -107,10 +104,7 @@ function handleStructuredEvent(data, cb, statusCb) {
       break;
     case 'focus_change':
     case 'heartbeat':
-    case 'window_update':
     case 'browser_navigation':
-    case 'system_metrics':
-    case 'user_activity':
       if (statusCb) statusCb(data);
       break;
   }
@@ -134,20 +128,8 @@ function logEvent(data) {
       logTextSelection(data, emoji, app);
       break;
 
-    case 'window_update':
-      logWindowUpdate(data, emoji, app);
-      break;
-
     case 'browser_navigation':
       logBrowserNavigation(data, emoji, app);
-      break;
-
-    case 'system_metrics':
-      logSystemMetrics(data, emoji);
-      break;
-
-    case 'user_activity':
-      logUserActivity(data, emoji, app);
       break;
 
     case 'heartbeat':
@@ -177,50 +159,11 @@ function logTextSelection(data, emoji, app) {
   logger.info(`${emoji} "${text}" from ${app} (${length} chars, ${source})`);
 }
 
-function logWindowUpdate(data, emoji, app) {
-  const title = data.windowTitle || 'Untitled';
-  const x = Math.round(data.windowPosition?.x || 0);
-  const y = Math.round(data.windowPosition?.y || 0);
-
-  logger.info(`${emoji} "${title}" (${x}, ${y}) - ${app}`);
-}
-
 function logBrowserNavigation(data, emoji, app) {
   const domain = data.domain || 'unknown';
   const tabInfo = data.tabCount ? ` (${data.tabCount} tabs)` : '';
 
   logger.info(`${emoji} ${domain}${tabInfo} - ${app}`);
-}
-
-function logSystemMetrics(data, emoji) {
-  const metrics = [];
-
-  if (data.batteryLevel !== undefined && data.batteryLevel !== null) {
-    metrics.push(`🔋${Math.round(data.batteryLevel)}%`);
-  }
-
-  if (data.screenScale) {
-    metrics.push(`📺${data.screenScale}x`);
-  }
-
-  const info = metrics.length > 0 ? metrics.join(' ') : 'System info collected';
-  logger.info(`${emoji} ${info}`);
-}
-
-function logUserActivity(data, emoji, app) {
-  const activity = data.activityType || 'general';
-  const duration = Math.round(data.duration || 0);
-  const timeOfDay = data.timeOfDay || 'unknown';
-
-  const timeEmojis = {
-    morning: '🌅',
-    afternoon: '☀️',
-    evening: '🌆',
-    night: '🌙'
-  };
-  const timeEmoji = timeEmojis[timeOfDay] || '🕐';
-
-  logger.info(`${emoji} ${activity} activity (${duration}s) ${timeEmoji} ${timeOfDay} - ${app}`);
 }
 
 function logHeartbeat(data, emoji, app) {

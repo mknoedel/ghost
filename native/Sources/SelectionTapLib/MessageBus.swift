@@ -97,9 +97,6 @@ public class RateLimitFilter: EventFilter {
     private var lastEmissionTimes: [EventType: Date] = [:]
     private let minIntervals: [EventType: TimeInterval] = [
         .heartbeat: 5.0, // Max once per 5 seconds
-        .systemMetrics: 10.0, // Max once per 10 seconds
-        .windowUpdate: 1.0, // Max once per second
-        .userActivity: 0.5, // Max twice per second
         .focusChange: 0.1, // Immediate
         .textSelection: 0.1, // Immediate
         .browserNavigation: 0.5 // Max twice per second
@@ -145,8 +142,6 @@ public class DuplicateEventFilter: EventFilter {
             return "focus_\(focusEvent.currentApp.bundleIdentifier)"
         case let textEvent as TextSelectionEvent:
             return "text_\(textEvent.text.prefix(50).hashValue)"
-        case let windowEvent as WindowUpdateEvent:
-            return "window_\(windowEvent.windowTitle)_\(windowEvent.windowPosition.x)_\(windowEvent.windowPosition.y)"
         case let browserEvent as BrowserNavigationEvent:
             // For browser events, include timestamp to allow focus-change events
             // even when navigating to the same page/tab
@@ -170,8 +165,6 @@ public class DataQualityFilter: EventFilter {
         switch event {
         case let textEvent as TextSelectionEvent:
             return !textEvent.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        case let windowEvent as WindowUpdateEvent:
-            return !windowEvent.windowTitle.isEmpty
         case let browserEvent as BrowserNavigationEvent:
             // Allow events with either valid URL or valid page title
             let hasValidURL = !browserEvent.currentURL

@@ -62,38 +62,26 @@ func logDebug(_ msg: @autoclosure () -> String) {
 public struct ActivityTrackerConfig {
     public let enableTextSelection: Bool
     public let enableFocusTracking: Bool
-    public let enableWindowTracking: Bool
     public let enableBrowserTracking: Bool
-    public let enableSystemMetrics: Bool
-    public let enableUserActivity: Bool
-    public let pollInterval: TimeInterval
     public let textCheckInterval: TimeInterval
 
     public init(
         enableTextSelection: Bool = true,
         enableFocusTracking: Bool = true,
-        enableWindowTracking: Bool = false,
-        enableBrowserTracking: Bool = false,
-        enableSystemMetrics: Bool = false,
-        enableUserActivity: Bool = false,
-        pollInterval: TimeInterval = 1.0,
+        enableBrowserTracking: Bool = true,
         textCheckInterval: TimeInterval = 0.2
     ) {
         self.enableTextSelection = enableTextSelection
         self.enableFocusTracking = enableFocusTracking
-        self.enableWindowTracking = enableWindowTracking
         self.enableBrowserTracking = enableBrowserTracking
-        self.enableSystemMetrics = enableSystemMetrics
-        self.enableUserActivity = enableUserActivity
-        self.pollInterval = pollInterval
         self.textCheckInterval = textCheckInterval
     }
 
     public static let `default` = ActivityTrackerConfig()
     public static let comprehensive = ActivityTrackerConfig(
-        enableTextSelection: true, enableFocusTracking: true,
-        enableWindowTracking: true, enableBrowserTracking: true,
-        enableSystemMetrics: true, enableUserActivity: true
+        enableTextSelection: true,
+        enableFocusTracking: true,
+        enableBrowserTracking: true
     )
 }
 
@@ -105,25 +93,22 @@ public class ActivityTracker {
     private var pollTimer: Timer?
     private var textTimer: Timer?
 
-    // Event generators
+    // Event generators (core only)
     private let focusTracker: FocusTracker
     private let textTracker: TextTracker
-    private let windowTracker: WindowTracker?
     private let browserTracker: BrowserTracker?
-    private let systemTracker: SystemTracker?
-    private let activityTracker: UserActivityTracker?
 
     public init(config: ActivityTrackerConfig = .default) {
         self.config = config
         messageBus = MessageBusFactory.createStandardBus()
 
-        // Initialize event generators based on configuration
+        // Initialize core event generators
         focusTracker = FocusTracker()
         textTracker = TextTracker()
-        windowTracker = config.enableWindowTracking ? WindowTracker() : nil
         browserTracker = config.enableBrowserTracking ? BrowserTracker() : nil
-        systemTracker = config.enableSystemMetrics ? SystemTracker() : nil
-        activityTracker = config.enableUserActivity ? UserActivityTracker() : nil
+        
+        // Set up intelligent trigger system
+        setupEventTriggers()
     }
 
     public func start() throws {
@@ -135,119 +120,103 @@ public class ActivityTracker {
             throw ActivityTrackerError.accessibilityNotGranted
         }
 
-        logInfo("ActivityTracker starting with configuration: \(configDescription())")
+        logInfo("ActivityTracker starting with event-driven architecture")
 
-        // Start main polling timer
-        pollTimer = Timer.scheduledTimer(
-            withTimeInterval: config.pollInterval,
-            repeats: true
-        ) { [weak self] _ in
-            self?.pollAndEmitEvents()
-        }
-
-        // Start text selection timer if enabled
+        // Start text selection timer (primary driver)
         if config.enableTextSelection {
             textTimer = Timer.scheduledTimer(
                 withTimeInterval: config.textCheckInterval,
                 repeats: true
             ) { [weak self] _ in
-                self?.checkTextSelection()
+                self?.checkTextSelectionAndTriggerEvents()
             }
         }
 
+        // Start focus monitoring (secondary driver)
+        startFocusMonitoring()
+        
         // Emit initial events
-        pollAndEmitEvents()
+        checkInitialState()
     }
 
     public func stop() {
-        pollTimer?.invalidate()
         textTimer?.invalidate()
-        pollTimer = nil
         textTimer = nil
+        stopFocusMonitoring()
         logInfo("ActivityTracker stopped")
     }
 
-    // MARK: - Event Collection
-
-    private func pollAndEmitEvents() {
+    // MARK: - Event-Driven Architecture
+    
+    private func setupEventTriggers() {
+        // TextTracker will be our primary event driver
+        // It detects changes in text fields and can trigger browser checks
+        // FocusTracker handles app changes and can trigger initial checks
+    }
+    
+    private func startFocusMonitoring() {
+        // Monitor focus changes using NSWorkspace notifications for efficiency
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleFocusChange(_:)),
+            name: NSWorkspace.didActivateApplicationNotification,
+            object: nil
+        )
+    }
+    
+    private func stopFocusMonitoring() {
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
+    
+    @objc private func handleFocusChange(_ notification: Notification) {
         let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
         let mousePos = getMousePosition()
-
-        // Check focus changes
+        
+        // Check focus changes immediately when app switches
         if config.enableFocusTracking {
-            if
-                let focusEvent = focusTracker.checkForEvents(
-                    timestamp: timestamp,
-                    mousePosition: mousePos
-                ) {
-                messageBus.emit(focusEvent)
-            }
-        }
-
-        // Check window updates
-        if let windowTracker {
-            if
-                let windowEvent = windowTracker.checkForEvents(
-                    timestamp: timestamp,
-                    mousePosition: mousePos
-                ) {
-                messageBus.emit(windowEvent)
-            }
-        }
-
-        // Check browser navigation
-        if let browserTracker {
-            if
-                let browserEvent = browserTracker.checkForEvents(
-                    timestamp: timestamp,
-                    mousePosition: mousePos
-                ) {
-                messageBus.emit(browserEvent)
-            }
-        }
-
-        // Collect system metrics
-        if let systemTracker {
-            if
-                let systemEvent = systemTracker.checkForEvents(
-                    timestamp: timestamp,
-                    mousePosition: mousePos
-                ) {
-                messageBus.emit(systemEvent)
-            }
-        }
-
-        // Check user activity
-        if let activityTracker {
-            if
-                let activityEvent = activityTracker.checkForEvents(
-                    timestamp: timestamp,
-                    mousePosition: mousePos
-                ) {
-                messageBus.emit(activityEvent)
-            }
-        }
-
-        // Emit heartbeat
-        if
-            let heartbeatEvent = focusTracker.createHeartbeat(
+            if let focusEvent = focusTracker.checkForEvents(
                 timestamp: timestamp,
                 mousePosition: mousePos
             ) {
-            messageBus.emit(heartbeatEvent)
+                messageBus.emit(focusEvent)
+                
+                // Trigger browser check if this is a browser app
+                if let _ = browserTracker, let focusChangeEvent = focusEvent as? FocusChangeEvent, isBrowserApp(focusChangeEvent.currentApp) {
+                    checkBrowserNavigation(timestamp: timestamp, mousePos: mousePos)
+                }
+            }
         }
     }
 
-    private func checkTextSelection() {
+    private func checkTextSelectionAndTriggerEvents() {
         let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
         let mousePos = getMousePosition()
+        
+        // Primary text selection check
+        checkTextSelection(timestamp: timestamp, mousePos: mousePos)
+        
+        // Check if we need to trigger browser navigation check
+        // This happens when text changes might indicate a page change
+        if browserTracker != nil {
+            let currentApp = getCurrentApp()
+            if let app = currentApp, isBrowserApp(app) {
+                checkBrowserNavigation(timestamp: timestamp, mousePos: mousePos)
+            }
+        }
+    }
+    
+    private func checkTextSelection(timestamp: Int64, mousePos: (x: Int, y: Int)) {
 
-        if
-            let textEvent = textTracker.checkForEvents(
-                timestamp: timestamp,
-                mousePosition: mousePos
-            ) {
+        if let textEvent = textTracker.checkForEvents(
+            timestamp: timestamp,
+            mousePosition: mousePos
+        ) {
             messageBus.emit(textEvent)
+            
+            // If text changed in a browser, check for navigation changes
+            if let _ = browserTracker, let textSelectionEvent = textEvent as? TextSelectionEvent, isBrowserApp(textSelectionEvent.app) {
+                checkBrowserNavigation(timestamp: timestamp, mousePos: mousePos)
+            }
         }
     }
 
@@ -255,11 +224,67 @@ public class ActivityTracker {
         var features: [String] = []
         if config.enableTextSelection { features.append("text") }
         if config.enableFocusTracking { features.append("focus") }
-        if config.enableWindowTracking { features.append("window") }
         if config.enableBrowserTracking { features.append("browser") }
-        if config.enableSystemMetrics { features.append("system") }
-        if config.enableUserActivity { features.append("activity") }
         return features.joined(separator: ", ")
+    }
+    
+    // MARK: - Helper Methods
+    
+    private func checkBrowserNavigation(timestamp: Int64, mousePos: (x: Int, y: Int)) {
+        guard let browserTracker else { return }
+        
+        if let browserEvent = browserTracker.checkForEvents(
+            timestamp: timestamp,
+            mousePosition: mousePos
+        ) {
+            messageBus.emit(browserEvent)
+        }
+    }
+    
+    private func checkInitialState() {
+        let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
+        let mousePos = getMousePosition()
+        
+        // Check initial focus state
+        if config.enableFocusTracking {
+            if let focusEvent = focusTracker.checkForEvents(
+                timestamp: timestamp,
+                mousePosition: mousePos
+            ) {
+                messageBus.emit(focusEvent)
+            }
+        }
+        
+        // Emit initial heartbeat
+        if let heartbeatEvent = focusTracker.createHeartbeat(
+            timestamp: timestamp,
+            mousePosition: mousePos
+        ) {
+            messageBus.emit(heartbeatEvent)
+        }
+    }
+    
+    private func isBrowserApp(_ app: AppInfo) -> Bool {
+        // Use the BrowserTracker's dynamic detection instead of hardcoded list
+        guard let browserTracker else { return false }
+        return browserTracker.hasBrowserCapabilities(app: app)
+    }
+    
+    private func getCurrentApp() -> AppInfo? {
+        guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
+            return nil
+        }
+        
+        return AppInfo(
+            name: frontmostApp.localizedName ?? "Unknown",
+            bundleIdentifier: frontmostApp.bundleIdentifier ?? "unknown",
+            processIdentifier: frontmostApp.processIdentifier,
+            isAccessible: true,
+            requiresFallback: false,
+            focusState: "active",
+            executableURL: frontmostApp.executableURL?.path ?? "",
+            launchDate: 0
+        )
     }
 }
 
@@ -360,17 +385,15 @@ class TextTracker: EventTracker {
         -> ActivityEvent? {
         let currentApp = getCurrentAppInfoStructured()
 
-        // Skip if app requires fallback
-        if currentApp.requiresFallback {
-            return nil
-        }
-
-        // Get current text selection
+        // Try aggressive text extraction (even for apps that normally require fallback)
         if let text = extractCurrentText(from: currentApp) {
             // Check if text or app changed
             if text != lastText || currentApp.bundleIdentifier != lastApp {
                 lastText = text
                 lastApp = currentApp.bundleIdentifier
+
+                // Determine source based on whether app requires fallback
+                let source = currentApp.requiresFallback ? "aggressive" : "accessibility"
 
                 return TextSelectionEvent(
                     timestamp: timestamp,
@@ -378,7 +401,7 @@ class TextTracker: EventTracker {
                     app: currentApp,
                     text: text,
                     selectionLength: text.count,
-                    source: "accessibility",
+                    source: source,
                     context: nil
                 )
             }
@@ -394,137 +417,220 @@ class TextTracker: EventTracker {
     private func extractCurrentText(from app: AppInfo) -> String? {
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
 
-        // Try to get focused element and extract text
+        // Strategy 1: Try focused element first (fast path)
+        if let text = extractFromFocusedElement(appElement: appElement) {
+            return text
+        }
+        
+        // Strategy 2: Search window tree for text fields (more aggressive)
+        if let text = extractFromWindowTree(appElement: appElement) {
+            return text
+        }
+        
+        // Strategy 3: For web apps, search web areas specifically
+        if isWebApp(app: app) {
+            if let text = extractFromWebAreas(appElement: appElement) {
+                return text
+            }
+        }
+
+        return nil
+    }
+    
+    // MARK: - Text Extraction Strategies
+    
+    private func extractFromFocusedElement(appElement: AXUIElement) -> String? {
         var focusedRef: CFTypeRef?
-        if
+        guard
             AXUIElementCopyAttributeValue(
                 appElement,
                 kAXFocusedUIElementAttribute as CFString,
                 &focusedRef
             ) == .success,
             let focusedElement = focusedRef,
-            CFGetTypeID(focusedElement) == AXUIElementGetTypeID() {
-            let axElement = focusedElement as! AXUIElement
-
-            // Try selected text first
-            var selectedTextRef: CFTypeRef?
-            if
-                AXUIElementCopyAttributeValue(
-                    axElement,
-                    kAXSelectedTextAttribute as CFString,
-                    &selectedTextRef
-                ) == .success,
-                let selectedText = selectedTextRef as? String, !selectedText.isEmpty {
-                return selectedText
-            }
-
-            // Try value attribute
-            var valueRef: CFTypeRef?
-            if
-                AXUIElementCopyAttributeValue(
-                    axElement,
-                    kAXValueAttribute as CFString,
-                    &valueRef
-                ) == .success,
-                let value = valueRef as? String, !value.isEmpty {
-                return value.count > 200 ? String(value.prefix(200)) : value
-            }
-        }
-
-        return nil
+            CFGetTypeID(focusedElement) == AXUIElementGetTypeID()
+        else { return nil }
+        
+        let axElement = focusedElement as! AXUIElement
+        return extractTextFromElement(axElement)
     }
-}
-
-// MARK: – Window Tracker
-
-class WindowTracker: EventTracker {
-    private var lastWindowTitle: String = ""
-    private var lastWindowPosition: (x: Double, y: Double) = (0, 0)
-
-    func checkForEvents(
-        timestamp: Int64,
-        mousePosition: (x: Int, y: Int)
-    )
-        -> ActivityEvent? {
-        let currentApp = getCurrentAppInfoStructured()
-        let appElement = AXUIElementCreateApplication(currentApp.processIdentifier)
-
+    
+    private func extractFromWindowTree(appElement: AXUIElement) -> String? {
+        // Get focused window
         var windowRef: CFTypeRef?
-        if
+        guard
             AXUIElementCopyAttributeValue(
                 appElement,
                 kAXFocusedWindowAttribute as CFString,
                 &windowRef
             ) == .success,
             let window = windowRef,
-            CFGetTypeID(window) == AXUIElementGetTypeID() {
-            let axWindow = window as! AXUIElement
-
-            // Get window title
-            var titleRef: CFTypeRef?
-            let windowTitle = AXUIElementCopyAttributeValue(
-                axWindow,
-                kAXTitleAttribute as CFString,
-                &titleRef
-            ) == .success ?
-                (titleRef as? String ?? "Untitled") : "Untitled"
-
-            // Get window position
-            var positionRef: CFTypeRef?
-            var windowPosition: (x: Double, y: Double) = (0, 0)
-            if
-                AXUIElementCopyAttributeValue(
-                    axWindow,
-                    kAXPositionAttribute as CFString,
-                    &positionRef
-                ) == .success,
-                let position = positionRef {
-                var point = CGPoint.zero
-                if AXValueGetValue(position as! AXValue, .cgPoint, &point) {
-                    windowPosition = (point.x, point.y)
-                }
-            }
-
-            // Check if window changed
-            if
-                windowTitle != lastWindowTitle ||
-                abs(windowPosition.x - lastWindowPosition.x) > 10 ||
-                abs(windowPosition.y - lastWindowPosition.y) > 10 {
-
-                lastWindowTitle = windowTitle
-                lastWindowPosition = windowPosition
-
-                // Get window size
-                var sizeRef: CFTypeRef?
-                var windowSize: (width: Double, height: Double) = (0, 0)
-                if
-                    AXUIElementCopyAttributeValue(
-                        axWindow,
-                        kAXSizeAttribute as CFString,
-                        &sizeRef
-                    ) == .success,
-                    let size = sizeRef {
-                    var cgSize = CGSize.zero
-                    if AXValueGetValue(size as! AXValue, .cgSize, &cgSize) {
-                        windowSize = (cgSize.width, cgSize.height)
-                    }
-                }
-
-                return WindowUpdateEvent(
-                    timestamp: timestamp,
-                    mousePosition: mousePosition,
-                    app: currentApp,
-                    windowTitle: windowTitle,
-                    windowPosition: windowPosition,
-                    windowSize: windowSize,
-                    isMainWindow: true
-                )
+            CFGetTypeID(window) == AXUIElementGetTypeID()
+        else { return nil }
+        
+        let axWindow = window as! AXUIElement
+        
+        // Search for text fields in the window tree
+        return findTextInElementTree(element: axWindow, depth: 0, maxDepth: 8)
+    }
+    
+    private func extractFromWebAreas(appElement: AXUIElement) -> String? {
+        // Get focused window first
+        var windowRef: CFTypeRef?
+        guard
+            AXUIElementCopyAttributeValue(
+                appElement,
+                kAXFocusedWindowAttribute as CFString,
+                &windowRef
+            ) == .success,
+            let window = windowRef,
+            CFGetTypeID(window) == AXUIElementGetTypeID()
+        else { return nil }
+        
+        let axWindow = window as! AXUIElement
+        
+        // Find web areas (for browser-based apps)
+        return findTextInWebAreas(element: axWindow, depth: 0, maxDepth: 10)
+    }
+    
+    private func extractTextFromElement(_ element: AXUIElement) -> String? {
+        // Try different text attributes in order of preference
+        let textAttributes = [
+            kAXSelectedTextAttribute,
+            kAXValueAttribute,
+            kAXTitleAttribute,
+            kAXDescriptionAttribute,
+            "AXPlaceholderValue" // For placeholder text in inputs
+        ]
+        
+        for attribute in textAttributes {
+            var textRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, attribute as CFString, &textRef) == .success,
+               let text = textRef as? String, !text.isEmpty {
+                // Limit text length to prevent huge captures
+                return text.count > 500 ? String(text.prefix(500)) : text
             }
         }
-
+        
         return nil
     }
+    
+    private func findTextInElementTree(element: AXUIElement, depth: Int, maxDepth: Int) -> String? {
+        guard depth < maxDepth else { return nil }
+        
+        // Check if current element has text
+        if let text = extractTextFromElement(element) {
+            return text
+        }
+        
+        // Check role - prioritize text-related elements
+        var roleRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success,
+           let role = roleRef as? String {
+            
+            // Prioritize text input elements
+            let textRoles = [
+                "AXTextField", "AXTextArea", "AXComboBox", "AXStaticText",
+                "AXGroup", "AXScrollArea" // Groups and scroll areas might contain text fields
+            ]
+            
+            if textRoles.contains(role) {
+                if let text = extractTextFromElement(element) {
+                    return text
+                }
+            }
+        }
+        
+        // Recurse into children
+        var childrenRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+           let children = childrenRef as? [AXUIElement] {
+            
+            // Search children, but prioritize likely text containers
+            for child in children {
+                if let text = findTextInElementTree(element: child, depth: depth + 1, maxDepth: maxDepth) {
+                    return text
+                }
+            }
+        }
+        
+        return nil
+    }
+    
+    private func findTextInWebAreas(element: AXUIElement, depth: Int, maxDepth: Int) -> String? {
+        guard depth < maxDepth else { return nil }
+        
+        // Check if this is a web area
+        var roleRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success,
+           let role = roleRef as? String, role == "AXWebArea" {
+            
+            // Search for text inputs within web area
+            if let text = findWebTextInputs(webArea: element, depth: 0, maxDepth: 6) {
+                return text
+            }
+        }
+        
+        // Recurse into children to find web areas
+        var childrenRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+           let children = childrenRef as? [AXUIElement] {
+            for child in children {
+                if let text = findTextInWebAreas(element: child, depth: depth + 1, maxDepth: maxDepth) {
+                    return text
+                }
+            }
+        }
+        
+        return nil
+    }
+    
+    private func findWebTextInputs(webArea: AXUIElement, depth: Int, maxDepth: Int) -> String? {
+        guard depth < maxDepth else { return nil }
+        
+        // Check current element for text
+        if let text = extractTextFromElement(webArea) {
+            return text
+        }
+        
+        // Look for web-specific text input roles
+        var roleRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(webArea, kAXRoleAttribute as CFString, &roleRef) == .success,
+           let role = roleRef as? String {
+            
+            let webTextRoles = [
+                "AXTextField", "AXTextArea", "AXComboBox", "AXGroup",
+                "AXGenericContainer", "AXList", "AXListItem" // Common in web apps
+            ]
+            
+            if webTextRoles.contains(role) {
+                if let text = extractTextFromElement(webArea) {
+                    return text
+                }
+            }
+        }
+        
+        // Recurse into children
+        var childrenRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(webArea, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+           let children = childrenRef as? [AXUIElement] {
+            for child in children {
+                if let text = findWebTextInputs(webArea: child, depth: depth + 1, maxDepth: maxDepth) {
+                    return text
+                }
+            }
+        }
+        
+        return nil
+    }
+    
+    private func isWebApp(app: AppInfo) -> Bool {
+        // Check if this is a browser or web-based application
+        let webBrowsers = ["Chrome", "Safari", "Firefox", "Edge", "Arc", "Brave"]
+        return webBrowsers.contains { app.bundleIdentifier.contains($0) }
+    }
 }
+
 
 // MARK: – Browser Tracker
 
@@ -1023,6 +1129,11 @@ class BrowserTracker: EventTracker {
             lastChecked: Date()
         )
     }
+    
+    func hasBrowserCapabilities(app: AppInfo) -> Bool {
+        let capabilities = getBrowserCapabilities(for: app)
+        return capabilities.hasURLSupport || capabilities.hasTitleSupport
+    }
 
     // ───── Debug helper ──────────────────────────────────────────────────────────
     private func dumpAXTree(
@@ -1068,7 +1179,7 @@ class BrowserTracker: EventTracker {
                     ) == .success {
                     let txt: String = if let s = vRef as? String { s }
                     else if CFGetTypeID(vRef) == CFURLGetTypeID() {
-                        (CFURLGetString(vRef as! CFURL) as String)
+                        CFURLGetString((vRef as! CFURL)) as String
                     }
                     else {
                         String(describing: vRef)
@@ -1099,87 +1210,7 @@ class BrowserTracker: EventTracker {
     }
 }
 
-// MARK: – System Tracker
 
-class SystemTracker: EventTracker {
-    private var lastEmission: Date = .distantPast
-
-    func checkForEvents(
-        timestamp: Int64,
-        mousePosition: (x: Int, y: Int)
-    )
-        -> ActivityEvent? {
-        // Only emit system metrics every 30 seconds
-        let now = Date()
-        if now.timeIntervalSince(lastEmission) < 30 {
-            return nil
-        }
-
-        lastEmission = now
-
-        var screenSize: (width: Double, height: Double) = (1920, 1080)
-        var screenScale = 1.0
-
-        if let screen = NSScreen.main {
-            screenSize = (screen.frame.width, screen.frame.height)
-            screenScale = screen.backingScaleFactor
-        }
-
-        return SystemMetricsEvent(
-            timestamp: timestamp,
-            mousePosition: mousePosition,
-            batteryLevel: nil, // TODO: Implement battery monitoring
-            isCharging: nil,
-            screenSize: screenSize,
-            screenScale: screenScale,
-            memoryPressure: nil
-        )
-    }
-}
-
-// MARK: – User Activity Tracker
-
-class UserActivityTracker: EventTracker {
-    private var lastActivity: Date = .init()
-
-    func checkForEvents(
-        timestamp: Int64,
-        mousePosition: (x: Int, y: Int)
-    )
-        -> ActivityEvent? {
-        let now = Date()
-        let timeSinceLastActivity = now.timeIntervalSince(lastActivity)
-
-        // Only emit activity events periodically
-        if timeSinceLastActivity < 10 {
-            return nil
-        }
-
-        lastActivity = now
-
-        let currentApp = getCurrentAppInfoStructured()
-        let calendar = Calendar.current
-        let hour = calendar.component(.hour, from: now)
-
-        let timeOfDay = switch hour {
-        case 5 ..< 12: "morning"
-        case 12 ..< 17: "afternoon"
-        case 17 ..< 21: "evening"
-        default: "night"
-        }
-
-        return UserActivityEvent(
-            timestamp: timestamp,
-            mousePosition: mousePosition,
-            app: currentApp,
-            activityType: "general",
-            intensity: 0.5,
-            duration: timeSinceLastActivity,
-            timeOfDay: timeOfDay,
-            isWeekend: calendar.isDateInWeekend(now)
-        )
-    }
-}
 
 // MARK: – Utilities
 
