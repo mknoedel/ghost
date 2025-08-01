@@ -45,6 +45,8 @@ public struct AppInfo: Codable {
     public let focusState: String
     public let executableURL: String
     public let launchDate: Double
+    public let windowTitle: String?
+    public let focusedElementInfo: String?
 
     public init(
         name: String,
@@ -54,7 +56,9 @@ public struct AppInfo: Codable {
         requiresFallback: Bool,
         focusState: String,
         executableURL: String,
-        launchDate: Double
+        launchDate: Double,
+        windowTitle: String? = nil,
+        focusedElementInfo: String? = nil
     ) {
         self.name = name
         self.bundleIdentifier = bundleIdentifier
@@ -64,10 +68,12 @@ public struct AppInfo: Codable {
         self.focusState = focusState
         self.executableURL = executableURL
         self.launchDate = launchDate
+        self.windowTitle = windowTitle
+        self.focusedElementInfo = focusedElementInfo
     }
 
     public func toDictionary() -> [String: Any] {
-        [
+        var dict: [String: Any] = [
             "name": name,
             "bundleIdentifier": bundleIdentifier,
             "processIdentifier": processIdentifier,
@@ -77,6 +83,16 @@ public struct AppInfo: Codable {
             "executableURL": executableURL,
             "launchDate": launchDate
         ]
+        
+        if let windowTitle = windowTitle {
+            dict["windowTitle"] = windowTitle
+        }
+        
+        if let focusedElementInfo = focusedElementInfo {
+            dict["focusedElementInfo"] = focusedElementInfo
+        }
+        
+        return dict
     }
 }
 

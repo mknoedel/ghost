@@ -90,8 +90,6 @@ public struct ActivityTrackerConfig {
 public class ActivityTracker {
     private let config: ActivityTrackerConfig
     private let messageBus: MessageBus
-    private var pollTimer: Timer?
-    private var textTimer: Timer?
 
     // Event generators (core only)
     private let focusTracker: FocusTracker
@@ -107,8 +105,15 @@ public class ActivityTracker {
         textTracker = TextTracker()
         browserTracker = config.enableBrowserTracking ? BrowserTracker() : nil
 
-        // Set up intelligent trigger system
-        setupEventTriggers()
+        
+        // Wire up tracker event handlers for AXObserver notifications
+        textTracker.eventHandler = { [weak self] event in
+            self?.messageBus.emit(event)
+        }
+        
+        browserTracker?.eventHandler = { [weak self] event in
+            self?.messageBus.emit(event)
+        }
     }
 
     public func start() throws {
@@ -120,16 +125,15 @@ public class ActivityTracker {
             throw ActivityTrackerError.accessibilityNotGranted
         }
 
-        logInfo("ActivityTracker starting with event-driven architecture")
+        logInfo("ActivityTracker starting with event-driven architecture using AXObserver")
 
-        // Start text selection timer (primary driver)
+        // Start AXObserver-based tracking (primary drivers)
         if config.enableTextSelection {
-            textTimer = Timer.scheduledTimer(
-                withTimeInterval: config.textCheckInterval,
-                repeats: true
-            ) { [weak self] _ in
-                self?.checkTextSelectionAndTriggerEvents()
-            }
+            textTracker.startObserving()
+        }
+        
+        if config.enableBrowserTracking {
+            browserTracker?.startObserving()
         }
 
         // Start focus monitoring (secondary driver)
@@ -140,19 +144,13 @@ public class ActivityTracker {
     }
 
     public func stop() {
-        textTimer?.invalidate()
-        textTimer = nil
+        textTracker.stopObserving()
+        browserTracker?.stopObserving()
         stopFocusMonitoring()
         logInfo("ActivityTracker stopped")
     }
 
     // MARK: - Event-Driven Architecture
-
-    private func setupEventTriggers() {
-        // TextTracker will be our primary event driver
-        // It detects changes in text fields and can trigger browser checks
-        // FocusTracker handles app changes and can trigger initial checks
-    }
 
     private func startFocusMonitoring() {
         // Monitor focus changes using NSWorkspace notifications for efficiency
@@ -182,52 +180,15 @@ public class ActivityTracker {
                 ) {
                 messageBus.emit(focusEvent)
 
-                // Trigger browser check if this is a browser app
-                if
-                    let _ = browserTracker,
-                    let focusChangeEvent = focusEvent as? FocusChangeEvent,
-                    isBrowserApp(focusChangeEvent.currentApp) {
-                    checkBrowserNavigation(timestamp: timestamp, mousePos: mousePos)
+                // Update trackers for new app (will recreate AXObservers if needed)
+                if let focusChangeEvent = focusEvent as? FocusChangeEvent {
+                    textTracker.updateForAppChange(focusChangeEvent.currentApp)
+                    browserTracker?.updateForAppChange(focusChangeEvent.currentApp)
                 }
             }
         }
     }
 
-    private func checkTextSelectionAndTriggerEvents() {
-        let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
-        let mousePos = getMousePosition()
-
-        // Primary text selection check
-        checkTextSelection(timestamp: timestamp, mousePos: mousePos)
-
-        // Check if we need to trigger browser navigation check
-        // This happens when text changes might indicate a page change
-        if browserTracker != nil {
-            let currentApp = getCurrentApp()
-            if let app = currentApp, isBrowserApp(app) {
-                checkBrowserNavigation(timestamp: timestamp, mousePos: mousePos)
-            }
-        }
-    }
-
-    private func checkTextSelection(timestamp: Int64, mousePos: (x: Int, y: Int)) {
-
-        if
-            let textEvent = textTracker.checkForEvents(
-                timestamp: timestamp,
-                mousePosition: mousePos
-            ) {
-            messageBus.emit(textEvent)
-
-            // If text changed in a browser, check for navigation changes
-            if
-                let _ = browserTracker,
-                let textSelectionEvent = textEvent as? TextSelectionEvent,
-                isBrowserApp(textSelectionEvent.app) {
-                checkBrowserNavigation(timestamp: timestamp, mousePos: mousePos)
-            }
-        }
-    }
 
     private func configDescription() -> String {
         var features: [String] = []
@@ -238,18 +199,6 @@ public class ActivityTracker {
     }
 
     // MARK: - Helper Methods
-
-    private func checkBrowserNavigation(timestamp: Int64, mousePos: (x: Int, y: Int)) {
-        guard let browserTracker else { return }
-
-        if
-            let browserEvent = browserTracker.checkForEvents(
-                timestamp: timestamp,
-                mousePosition: mousePos
-            ) {
-            messageBus.emit(browserEvent)
-        }
-    }
 
     private func checkInitialState() {
         let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
@@ -295,7 +244,9 @@ public class ActivityTracker {
             requiresFallback: false,
             focusState: "active",
             executableURL: frontmostApp.executableURL?.path ?? "",
-            launchDate: 0
+            launchDate: 0,
+            windowTitle: nil,  // Use getCurrentAppInfoStructured() for full context
+            focusedElementInfo: nil
         )
     }
 }
@@ -389,6 +340,240 @@ class FocusTracker: EventTracker {
 class TextTracker: EventTracker {
     private var lastText: String = ""
     private var lastApp: String = ""
+    private var axObserver: AXObserver?
+    private var observedElement: AXUIElement?
+    private var observedApp: pid_t = -1
+    
+    var eventHandler: ((ActivityEvent) -> Void)?
+    
+    deinit {
+        stopObserving()
+    }
+    
+    func startObserving() {
+        stopObserving() // Clean up any existing observer
+        
+        let currentApp = getCurrentAppInfoStructured()
+        guard currentApp.processIdentifier != -1 else { return }
+        
+        setupObserverForApp(currentApp)
+    }
+    
+    func stopObserving() {
+        guard let observer = axObserver else { return }
+        
+        if let element = observedElement {
+            // Remove all notifications we might have added
+            AXObserverRemoveNotification(observer, element, kAXSelectedTextChangedNotification as CFString)
+            AXObserverRemoveNotification(observer, element, kAXFocusedUIElementChangedNotification as CFString)
+            AXObserverRemoveNotification(observer, element, kAXValueChangedNotification as CFString)
+        }
+        
+        CFRunLoopRemoveSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(observer), .defaultMode)
+        axObserver = nil
+        observedElement = nil
+        observedApp = -1
+    }
+    
+    private func setupObserverForApp(_ app: AppInfo) {
+        let pid = app.processIdentifier
+        
+        // Create observer
+        var observer: AXObserver?
+        let result = AXObserverCreate(pid, { (observer, element, notification, userData) in
+            guard let userData = userData else { return }
+            let textTracker = Unmanaged<TextTracker>.fromOpaque(userData).takeUnretainedValue()
+            textTracker.handleAccessibilityNotification(element: element, notification: notification)
+        }, &observer)
+        
+        guard result == .success, let observer = observer else {
+            logDebug("Failed to create AXObserver for \(app.name): \(result)")
+            return
+        }
+        
+        self.axObserver = observer
+        self.observedApp = pid
+        
+        // Get the application element
+        let appElement = AXUIElementCreateApplication(pid)
+        self.observedElement = appElement
+        
+        let userData = Unmanaged.passUnretained(self).toOpaque()
+        
+        // Strategy 1: Observe application-wide notifications
+        let appNotifications = [
+            kAXSelectedTextChangedNotification,
+            kAXFocusedUIElementChangedNotification,
+            kAXValueChangedNotification,
+            kAXTitleChangedNotification  // Window title changes
+        ]
+        
+        for notification in appNotifications {
+            let addResult = AXObserverAddNotification(
+                observer,
+                appElement,
+                notification as CFString,
+                userData
+            )
+            if addResult == .success {
+                logDebug("Added app-level \(notification) observer for \(app.name)")
+            }
+        }
+        
+        // Strategy 2: Observe focused window specifically for better context
+        if let focusedWindow = getFocusedWindow(appElement: appElement) {
+            let windowNotifications = [
+                kAXTitleChangedNotification,
+                kAXValueChangedNotification,
+                kAXFocusedUIElementChangedNotification
+            ]
+            
+            for notification in windowNotifications {
+                let addResult = AXObserverAddNotification(
+                    observer,
+                    focusedWindow,
+                    notification as CFString,
+                    userData
+                )
+                if addResult == .success {
+                    logDebug("Added window-level \(notification) observer for \(app.name)")
+                }
+            }
+        }
+        
+        // Strategy 3: Observe currently focused element for granular updates
+        if let focusedElement = getFocusedElement(appElement: appElement) {
+            setupFocusedElementObserver(observer: observer, element: focusedElement, userData: userData, appName: app.name)
+        }
+        
+        // Add observer to run loop
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(observer), .defaultMode)
+        
+        logInfo("Enhanced AXObserver setup complete for \(app.name)")
+    }
+    
+    private func getFocusedWindow(appElement: AXUIElement) -> AXUIElement? {
+        var windowRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            appElement,
+            kAXFocusedWindowAttribute as CFString,
+            &windowRef
+        ) == .success,
+              let window = windowRef,
+              CFGetTypeID(window) == AXUIElementGetTypeID() else {
+            return nil
+        }
+        return (window as! AXUIElement)
+    }
+    
+    private func getFocusedElement(appElement: AXUIElement) -> AXUIElement? {
+        var focusedRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            appElement,
+            kAXFocusedUIElementAttribute as CFString,
+            &focusedRef
+        ) == .success,
+              let focused = focusedRef,
+              CFGetTypeID(focused) == AXUIElementGetTypeID() else {
+            return nil
+        }
+        return (focused as! AXUIElement)
+    }
+    
+    private func setupFocusedElementObserver(observer: AXObserver, element: AXUIElement, userData: UnsafeMutableRawPointer, appName: String) {
+        // Get element role to determine relevant notifications
+        var roleRef: CFTypeRef?
+        var elementRole = "unknown"
+        if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success,
+           let role = roleRef as? String {
+            elementRole = role
+        }
+        
+        // Determine notifications based on element type
+        var elementNotifications: [String] = []
+        
+        switch elementRole {
+        case "AXTextField", "AXTextArea", "AXSecureTextField":
+            elementNotifications = [
+                kAXValueChangedNotification,
+                kAXSelectedTextChangedNotification,
+                "AXTextSelectionChangedNotification"
+            ]
+        case "AXWebArea":
+            elementNotifications = [
+                kAXValueChangedNotification,
+                kAXSelectedTextChangedNotification,
+                kAXTitleChangedNotification,
+                "AXLoadCompleteNotification"
+            ]
+        case "AXComboBox", "AXPopUpButton":
+            elementNotifications = [
+                kAXValueChangedNotification,
+                "AXMenuItemSelectedNotification"
+            ]
+        case "AXButton", "AXCheckBox", "AXRadioButton":
+            elementNotifications = [
+                kAXValueChangedNotification,
+                "AXPressedNotification"
+            ]
+        default:
+            elementNotifications = [
+                kAXValueChangedNotification,
+                kAXSelectedTextChangedNotification
+            ]
+        }
+        
+        // Add element-specific notifications
+        for notification in elementNotifications {
+            let addResult = AXObserverAddNotification(
+                observer,
+                element,
+                notification as CFString,
+                userData
+            )
+            if addResult == .success {
+                logDebug("Added element-level \(notification) for \(elementRole) in \(appName)")
+            }
+        }
+    }
+    
+    private func handleAccessibilityNotification(element: AXUIElement, notification: CFString) {
+        let notificationName = notification as String
+        
+        // Get additional context from the element that triggered the notification
+        let elementContext = extractFocusedElementContext(element) ?? "unknown"
+        logDebug("Received \(notificationName) from element: \(elementContext)")
+        
+        let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
+        let mousePos = getMousePosition()
+        
+        // For focused element changes, dynamically update observer targeting
+        if notificationName == kAXFocusedUIElementChangedNotification {
+            updateObserverTargeting(newFocusedElement: element)
+        }
+        
+        // Check for text changes with enhanced context
+        if let event = checkForEvents(timestamp: timestamp, mousePosition: mousePos) {
+            eventHandler?(event)
+        }
+    }
+    
+    private func updateObserverTargeting(newFocusedElement: AXUIElement) {
+        guard let observer = axObserver else { return }
+        
+        // Add targeted observations for the newly focused element
+        let userData = Unmanaged.passUnretained(self).toOpaque()
+        setupFocusedElementObserver(observer: observer, element: newFocusedElement, userData: userData, appName: "current")
+        
+        logDebug("Updated observer targeting for newly focused element")
+    }
+    
+    func updateForAppChange(_ newApp: AppInfo) {
+        // Only recreate observer if we're switching to a different app
+        if newApp.processIdentifier != observedApp {
+            setupObserverForApp(newApp)
+        }
+    }
 
     func checkForEvents(
         timestamp: Int64,
@@ -405,7 +590,7 @@ class TextTracker: EventTracker {
                 lastApp = currentApp.bundleIdentifier
 
                 // Determine source based on whether app requires fallback
-                let source = currentApp.requiresFallback ? "aggressive" : "accessibility"
+                let source = currentApp.requiresFallback ? "observer" : "accessibility-observer"
 
                 return TextSelectionEvent(
                     timestamp: timestamp,
@@ -713,6 +898,114 @@ class BrowserTracker: EventTracker {
     private var lastPageTitle: String = ""
     private var lastAppBundleId: String = ""
     private var browserCapabilityCache: [String: BrowserCapabilities] = [:]
+    private var axObserver: AXObserver?
+    private var observedElement: AXUIElement?
+    private var observedApp: pid_t = -1
+    
+    var eventHandler: ((ActivityEvent) -> Void)?
+    
+    deinit {
+        stopObserving()
+    }
+    
+    func startObserving() {
+        stopObserving() // Clean up any existing observer
+        
+        let currentApp = getCurrentAppInfoStructured()
+        guard currentApp.processIdentifier != -1, hasBrowserCapabilities(app: currentApp) else { return }
+        
+        setupObserverForApp(currentApp)
+    }
+    
+    func stopObserving() {
+        guard let observer = axObserver else { return }
+        
+        if let element = observedElement {
+            // Remove browser-specific notifications
+            AXObserverRemoveNotification(observer, element, kAXTitleChangedNotification as CFString)
+            AXObserverRemoveNotification(observer, element, kAXValueChangedNotification as CFString)
+            AXObserverRemoveNotification(observer, element, kAXFocusedUIElementChangedNotification as CFString)
+        }
+        
+        CFRunLoopRemoveSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(observer), .defaultMode)
+        axObserver = nil
+        observedElement = nil
+        observedApp = -1
+    }
+    
+    private func setupObserverForApp(_ app: AppInfo) {
+        let pid = app.processIdentifier
+        
+        // Create observer
+        var observer: AXObserver?
+        let result = AXObserverCreate(pid, { (observer, element, notification, userData) in
+            guard let userData = userData else { return }
+            let browserTracker = Unmanaged<BrowserTracker>.fromOpaque(userData).takeUnretainedValue()
+            browserTracker.handleAccessibilityNotification(element: element, notification: notification)
+        }, &observer)
+        
+        guard result == .success, let observer = observer else {
+            logDebug("Failed to create AXObserver for browser \(app.name): \(result)")
+            return
+        }
+        
+        self.axObserver = observer
+        self.observedApp = pid
+        
+        // Get the application element
+        let appElement = AXUIElementCreateApplication(pid)
+        self.observedElement = appElement
+        
+        // Add browser-specific notifications
+        let userData = Unmanaged.passUnretained(self).toOpaque()
+        
+        let notifications = [
+            kAXTitleChangedNotification,       // Page title changes
+            kAXValueChangedNotification,       // Address bar changes
+            kAXFocusedUIElementChangedNotification // Tab switches
+        ]
+        
+        for notification in notifications {
+            let addResult = AXObserverAddNotification(
+                observer,
+                appElement,
+                notification as CFString,
+                userData
+            )
+            if addResult == .success {
+                logDebug("Successfully added \(notification) observer for browser \(app.name)")
+            } else {
+                logDebug("Failed to add \(notification) observer for browser \(app.name): \(addResult)")
+            }
+        }
+        
+        // Add observer to run loop
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(observer), .defaultMode)
+        
+        logInfo("Browser AXObserver setup complete for \(app.name)")
+    }
+    
+    private func handleAccessibilityNotification(element: AXUIElement, notification: CFString) {
+        let notificationName = notification as String
+        logDebug("Received browser accessibility notification: \(notificationName)")
+        
+        let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
+        let mousePos = getMousePosition()
+        
+        // Check for browser navigation changes
+        if let event = checkForEvents(timestamp: timestamp, mousePosition: mousePos) {
+            eventHandler?(event)
+        }
+    }
+    
+    func updateForAppChange(_ newApp: AppInfo) {
+        // Only recreate observer if we're switching to a different browser app
+        if newApp.processIdentifier != observedApp, hasBrowserCapabilities(app: newApp) {
+            setupObserverForApp(newApp)
+        } else if !hasBrowserCapabilities(app: newApp) {
+            stopObserving()
+        }
+    }
 
     private struct BrowserCapabilities {
         let hasURLSupport: Bool
@@ -1297,7 +1590,8 @@ private func getCurrentAppInfoStructured() -> AppInfo {
         return AppInfo(
             name: "Unknown", bundleIdentifier: "unknown", processIdentifier: -1,
             isAccessible: false, requiresFallback: true,
-            focusState: "unfocused", executableURL: "", launchDate: 0
+            focusState: "unfocused", executableURL: "", launchDate: 0,
+            windowTitle: nil, focusedElementInfo: nil
         )
     }
 
@@ -1315,15 +1609,50 @@ private func getCurrentAppInfoStructured() -> AppInfo {
     let windows = (windowsRef as? [Any]) ?? []
     let hasTree = windowsOK && !windows.isEmpty
 
-    // If it has a tree, test focus access
+    // Get window title from focused window
+    var windowTitle: String? = nil
+    if hasTree {
+        var focusedWindowRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(
+            appElement,
+            kAXFocusedWindowAttribute as CFString,
+            &focusedWindowRef
+        ) == .success,
+           let focusedWindow = focusedWindowRef,
+           CFGetTypeID(focusedWindow) == AXUIElementGetTypeID() {
+            
+            let axWindow = focusedWindow as! AXUIElement
+            var titleRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(
+                axWindow,
+                kAXTitleAttribute as CFString,
+                &titleRef
+            ) == .success,
+               let title = titleRef as? String,
+               !title.isEmpty {
+                windowTitle = title
+            }
+        }
+    }
+
+    // Get focused element information for rich context
+    var focusedElementInfo: String? = nil
     let canAccessFocus: Bool = {
         guard hasTree else { return false }
         var focusedRef: CFTypeRef?
-        return AXUIElementCopyAttributeValue(
+        if AXUIElementCopyAttributeValue(
             appElement,
             kAXFocusedUIElementAttribute as CFString,
             &focusedRef
-        ) == .success
+        ) == .success,
+           let focusedElement = focusedRef,
+           CFGetTypeID(focusedElement) == AXUIElementGetTypeID() {
+            
+            let axElement = focusedElement as! AXUIElement
+            focusedElementInfo = extractFocusedElementContext(axElement)
+            return true
+        }
+        return false
     }()
 
     let requiresFallback = !hasTree || !canAccessFocus
@@ -1336,8 +1665,51 @@ private func getCurrentAppInfoStructured() -> AppInfo {
         requiresFallback: requiresFallback,
         focusState: "focused",
         executableURL: app.executableURL?.path ?? "",
-        launchDate: app.launchDate?.timeIntervalSince1970 ?? 0
+        launchDate: app.launchDate?.timeIntervalSince1970 ?? 0,
+        windowTitle: windowTitle,
+        focusedElementInfo: focusedElementInfo
     )
+}
+
+private func extractFocusedElementContext(_ element: AXUIElement) -> String? {
+    var contextParts: [String] = []
+    
+    // Get role
+    var roleRef: CFTypeRef?
+    if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success,
+       let role = roleRef as? String {
+        contextParts.append("role:\(role)")
+    }
+    
+    // Get role description
+    var roleDescRef: CFTypeRef?
+    if AXUIElementCopyAttributeValue(element, kAXRoleDescriptionAttribute as CFString, &roleDescRef) == .success,
+       let roleDesc = roleDescRef as? String {
+        contextParts.append("desc:\(roleDesc)")
+    }
+    
+    // Get title/label
+    var titleRef: CFTypeRef?
+    if AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &titleRef) == .success,
+       let title = titleRef as? String, !title.isEmpty {
+        contextParts.append("title:\(title.prefix(50))")
+    }
+    
+    // Get value for input fields
+    var valueRef: CFTypeRef?
+    if AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valueRef) == .success,
+       let value = valueRef as? String, !value.isEmpty {
+        contextParts.append("value:\(value.prefix(30))")
+    }
+    
+    // Get help text
+    var helpRef: CFTypeRef?
+    if AXUIElementCopyAttributeValue(element, kAXHelpAttribute as CFString, &helpRef) == .success,
+       let help = helpRef as? String, !help.isEmpty {
+        contextParts.append("help:\(help.prefix(50))")
+    }
+    
+    return contextParts.isEmpty ? nil : contextParts.joined(separator: "|")
 }
 
 // MARK: – Errors
