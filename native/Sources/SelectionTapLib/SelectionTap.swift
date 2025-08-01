@@ -6,8 +6,8 @@
 
 import ApplicationServices
 import Cocoa
-import Foundation
 import Darwin
+import Foundation
 import Quartz
 
 // MARK: – Logging
@@ -615,7 +615,7 @@ class TextTracker: EventTracker {
                     // Handle specific AX errors gracefully
                     let errorMsg = switch addResult.rawValue {
                     case -25209: "attribute unsupported"
-                    case -25202: "invalid UI element"  
+                    case -25202: "invalid UI element"
                     case -25204: "cannot complete"
                     default: "unknown error \(addResult.rawValue)"
                     }
@@ -678,7 +678,8 @@ class TextTracker: EventTracker {
                         logDebug("STEP 4: Text event created, emitting")
                         eventHandler?(event)
                         logDebug("STEP 4: Text event emitted")
-                    } else {
+                    }
+                    else {
                         logDebug("STEP 4: No text event created")
                     }
                 }
@@ -686,10 +687,13 @@ class TextTracker: EventTracker {
                     logError("STEP 4 FAILED: Failed to create text event: \(error)")
                 }
 
-                logDebug("COMPLETE: Notification \(notificationName) processed successfully")
+                logDebug(
+                    "COMPLETE: Notification \(notificationName) processed successfully"
+                )
             }
             catch {
-                logError("CRITICAL: Error in accessibility notification handler: \(error)")
+                logError("CRITICAL: Error in accessibility notification handler: \(error)"
+                )
                 // Don't re-throw to prevent process crash
             }
         }
@@ -2005,23 +2009,23 @@ private func setupCrashHandler() {
         print("Signal: \(signal)")
         print("Thread: \(Thread.current)")
         print("Stack trace:")
-        Thread.callStackSymbols.forEach { symbol in
+        for symbol in Thread.callStackSymbols {
             print("  \(symbol)")
         }
         print("🚨 CRASH END\n")
-        exit(132)  // Exit with SIGILL code
+        exit(132) // Exit with SIGILL code
     }
-    
+
     signal(SIGSEGV) { signal in
         print("\n🚨 SIGSEGV CRASH DETECTED!")
         print("Signal: \(signal)")
         print("Thread: \(Thread.current)")
         print("Stack trace:")
-        Thread.callStackSymbols.forEach { symbol in
+        for symbol in Thread.callStackSymbols {
             print("  \(symbol)")
         }
         print("🚨 CRASH END\n")
-        exit(139)  // Exit with SIGSEGV code
+        exit(139) // Exit with SIGSEGV code
     }
 }
 
@@ -2063,28 +2067,29 @@ class WorkflowAnalyzer {
         // Ultra-safe version to prevent all crashes
         let now = Date()
         let timeSinceLastEvent = max(0, now.timeIntervalSince(lastEventTime))
-        
+
         // Reset session if too much time has passed (30 minutes)
         if timeSinceLastEvent > 1800 {
             currentSessionId = UUID().uuidString
             sequenceCounter = 0
         }
-        
+
         // Safe increment with bounds checking
         if sequenceCounter < Int64.max - 1 {
             sequenceCounter += 1
-        } else {
+        }
+        else {
             sequenceCounter = 1
         }
-        
+
         lastEventTime = now
-        
+
         // Simple, safe hash without complex operations
         let simpleHash = String((event + (content ?? "")).count)
         let phase = lastContextHash == simpleHash ? "focused" : "transition"
-        
+
         lastContextHash = simpleHash
-        
+
         return WorkflowContext(
             sessionId: currentSessionId,
             sequenceNumber: sequenceCounter,
@@ -2106,7 +2111,7 @@ class WorkflowAnalyzer {
         let isMultitasking = isMultitaskingActive()
 
         return InteractionContext(
-            isMultitasking: isMultitasking // TODO: Add the names of the apps
+            isMultitasking: isMultitasking
         )
     }
 
@@ -2245,7 +2250,9 @@ class WorkflowAnalyzer {
         let taskLikeLines = lines.filter { line in
             let trimmed = line.trimmingCharacters(in: .whitespaces).lowercased()
             return trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") ||
-                (trimmed.count > 3 && trimmed.prefix(3).allSatisfy { $0.isNumber || $0 == "." || $0 == " " })
+                (trimmed.count > 3 && trimmed.prefix(3)
+                    .allSatisfy { $0.isNumber || $0 == "." || $0 == " " }
+                )
         }
 
         let hasTaskStructure = taskLikeLines.count >= 2 && taskLikeLines.count > lines
@@ -2267,65 +2274,20 @@ class WorkflowAnalyzer {
         let keywordMatches = calendarKeywords.filter { lowercased.contains($0) }.count
 
         // Simple time/date detection without dangerous regex
-        let hasTimePattern = lowercased.contains(":") && (lowercased.contains("am") || lowercased.contains("pm"))
-        
-        let hasDatePattern = lowercased.contains("/") || lowercased.contains("-") || 
-                             lowercased.contains("monday") || lowercased.contains("tuesday") ||
-                             lowercased.contains("2024") || lowercased.contains("2025")
+        let hasTimePattern = lowercased
+            .contains(":") && (lowercased.contains("am") || lowercased.contains("pm"))
+
+        let hasDatePattern = lowercased.contains("/") || lowercased.contains("-") ||
+            lowercased.contains("monday") || lowercased.contains("tuesday") ||
+            lowercased.contains("2024") || lowercased.contains("2025")
 
         return keywordMatches >= 2 || hasTimePattern || hasDatePattern
-    }
-
-    // MARK: - Context Analysis Functions
-
-    private static func generateContextHash(event: String, content: String?) -> String {
-        // Simplified context hash to avoid expensive accessibility calls
-        // Sanitize inputs to prevent hash computation issues
-        let safeEvent = event.prefix(20).description
-        let safeContent = content?.prefix(30).description ?? ""
-        
-        // Use a simple, safe hash approach
-        let combined = "\(safeEvent)|\(safeContent)"
-        
-        // Create a safer hash using djb2 algorithm to avoid Swift's hashValue issues
-        var hash: UInt32 = 5381
-        for char in combined.utf8 {
-            hash = hash &* 33 &+ UInt32(char)
-        }
-        
-        return String(hash)
-    }
-
-    private static func inferWorkflowPhase(
-        currentHash: String,
-        previousHash: String
-    )
-        -> String {
-        if currentHash == previousHash {
-            return "focused"
-        }
-        else {
-            // Safe comparison avoiding overflow issues
-            let currentHashValue = currentHash.hashValue
-            let previousHashValue = previousHash.hashValue
-            
-            // Use safe difference calculation by working with Int64
-            let current64 = Int64(currentHashValue)
-            let previous64 = Int64(previousHashValue)
-            let difference = abs(current64 - previous64)
-            
-            if difference < 1000 {
-                return "related"
-            } else {
-                return "transition"
-            }
-        }
     }
 
     private static func isMultitaskingActive() -> Bool {
         // Simplified multitasking detection to avoid expensive NSWorkspace calls
         // Just return a reasonable default for now
-        return true
+        true
     }
 
     /// Categorizes applications by their bundle identifier with comprehensive pattern
@@ -2343,8 +2305,13 @@ class WorkflowAnalyzer {
         let lowercased = bundleId.lowercased()
         let category = determineAppCategory(lowercased)
 
-        // Cache the result for future lookups
+        // Cache the result for future lookups with size limit
         if let category {
+            // Prevent unbounded cache growth
+            if appCategoryCache.count > 100 {
+                appCategoryCache.removeAll()
+                logWarn("App category cache exceeded size limit (100) and was cleared")
+            }
             appCategoryCache[bundleId] = category
         }
 
