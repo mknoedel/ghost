@@ -211,10 +211,11 @@ public class SessionTrackingProcessor: EventProcessor {
                 let newHeartbeat = HeartbeatEvent(
                     timestamp: heartbeatEvent.timestamp,
                     mousePosition: heartbeatEvent.mousePosition,
+                    workflowContext: heartbeatEvent.workflowContext,
                     app: heartbeatEvent.app,
                     sessionDuration: duration,
                     activeSessions: heartbeatEvent.activeSessions,
-                    totalActiveTime: heartbeatEvent.totalActiveTime
+                    dominantCategory: heartbeatEvent.dominantCategory
                 )
                 return newHeartbeat
             }

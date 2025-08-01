@@ -57,8 +57,8 @@ function startLiveWatcher(cb, statusCb) {
         logger.info('[SelectionTap]', d.toString().trim());
       });
 
-      child.on('close', code => {
-        logger.warn(`Process closed with code: ${code}`);
+      child.on('close', (code, signal) => {
+        logger.warn(`Process closed with code: ${code} - signal ${signal}`);
         child = null;
         if (!resolved) {
           resolved = true;

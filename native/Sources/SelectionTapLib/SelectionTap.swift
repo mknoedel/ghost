@@ -7,6 +7,7 @@
 import ApplicationServices
 import Cocoa
 import Foundation
+import Darwin
 import Quartz
 
 // MARK: – Logging
@@ -18,7 +19,7 @@ enum LogLevel: Int {
     case debug = 3
 }
 
-private let currentLogLevel: LogLevel = .info
+private let currentLogLevel: LogLevel = .debug
 
 @inline(__always)
 private func shouldLog(level: LogLevel) -> Bool {
@@ -105,12 +106,11 @@ public class ActivityTracker {
         textTracker = TextTracker()
         browserTracker = config.enableBrowserTracking ? BrowserTracker() : nil
 
-        
         // Wire up tracker event handlers for AXObserver notifications
         textTracker.eventHandler = { [weak self] event in
             self?.messageBus.emit(event)
         }
-        
+
         browserTracker?.eventHandler = { [weak self] event in
             self?.messageBus.emit(event)
         }
@@ -125,13 +125,14 @@ public class ActivityTracker {
             throw ActivityTrackerError.accessibilityNotGranted
         }
 
-        logInfo("ActivityTracker starting with event-driven architecture using AXObserver")
+        logInfo("ActivityTracker starting with event-driven architecture using AXObserver"
+        )
 
         // Start AXObserver-based tracking (primary drivers)
         if config.enableTextSelection {
             textTracker.startObserving()
         }
-        
+
         if config.enableBrowserTracking {
             browserTracker?.startObserving()
         }
@@ -189,7 +190,6 @@ public class ActivityTracker {
         }
     }
 
-
     private func configDescription() -> String {
         var features: [String] = []
         if config.enableTextSelection { features.append("text") }
@@ -245,7 +245,7 @@ public class ActivityTracker {
             focusState: "active",
             executableURL: frontmostApp.executableURL?.path ?? "",
             launchDate: 0,
-            windowTitle: nil,  // Use getCurrentAppInfoStructured() for full context
+            windowTitle: nil, // Use getCurrentAppInfoStructured() for full context
             focusedElementInfo: nil
         )
     }
@@ -278,13 +278,27 @@ class FocusTracker: EventTracker {
                 let focusDuration = Date().timeIntervalSince(lastFocusChange)
                 lastFocusChange = Date()
 
+                // Generate workflow analysis data for focus change
+                let workflowContext = WorkflowAnalyzer.generateWorkflowContext(
+                    for: "focus_change",
+                    content: currentAppInfo.name
+                )
+                let interactionContext = WorkflowAnalyzer.generateInteractionContext()
+                let appCategory = WorkflowAnalyzer
+                    .categorizeApp(currentAppInfo.bundleIdentifier)
+
                 let event = FocusChangeEvent(
                     timestamp: timestamp,
                     mousePosition: mousePosition,
+                    workflowContext: workflowContext,
                     currentApp: currentAppInfo,
                     previousApp: lastApp,
                     focusDuration: focusDuration,
-                    sessionId: generateSessionId()
+                    sessionId: generateSessionId(),
+                    interactionContext: interactionContext,
+                    appCategory: appCategory,
+                    isTaskSwitch: WorkflowAnalyzer
+                        .categorizeApp(lastApp.bundleIdentifier) != appCategory
                 )
 
                 lastAppInfo = currentAppInfo
@@ -312,13 +326,20 @@ class FocusTracker: EventTracker {
 
         // Only emit heartbeat every 30 seconds
         if Int(focusDuration) % 30 == 0, Int(focusDuration) > 0 {
+            let workflowContext = WorkflowAnalyzer.generateWorkflowContext(
+                for: "heartbeat",
+                content: currentApp.name
+            )
+            let appCategory = WorkflowAnalyzer.categorizeApp(currentApp.bundleIdentifier)
+
             return HeartbeatEvent(
                 timestamp: timestamp,
                 mousePosition: mousePosition,
+                workflowContext: workflowContext,
                 app: currentApp,
                 sessionDuration: sessionDuration,
                 activeSessions: [currentApp.bundleIdentifier: focusDuration],
-                totalActiveTime: sessionDuration
+                dominantCategory: appCategory
             )
         }
 
@@ -343,71 +364,97 @@ class TextTracker: EventTracker {
     private var axObserver: AXObserver?
     private var observedElement: AXUIElement?
     private var observedApp: pid_t = -1
-    
+    private var isShuttingDown = false
+
     var eventHandler: ((ActivityEvent) -> Void)?
-    
-    deinit {
-        stopObserving()
-    }
-    
+
     func startObserving() {
-        stopObserving() // Clean up any existing observer
-        
+        isShuttingDown = false
+        tearDownObserver(final: false)
         let currentApp = getCurrentAppInfoStructured()
         guard currentApp.processIdentifier != -1 else { return }
-        
         setupObserverForApp(currentApp)
     }
-    
+
     func stopObserving() {
+        tearDownObserver(final: true)
+    }
+
+    deinit {
+        tearDownObserver(final: true)
+    }
+
+    private func tearDownObserver(final: Bool) {
+        if final { isShuttingDown = true }
+
         guard let observer = axObserver else { return }
-        
+
         if let element = observedElement {
-            // Remove all notifications we might have added
-            AXObserverRemoveNotification(observer, element, kAXSelectedTextChangedNotification as CFString)
-            AXObserverRemoveNotification(observer, element, kAXFocusedUIElementChangedNotification as CFString)
-            AXObserverRemoveNotification(observer, element, kAXValueChangedNotification as CFString)
+            AXObserverRemoveNotification(
+                observer,
+                element,
+                kAXSelectedTextChangedNotification as CFString
+            )
+            AXObserverRemoveNotification(
+                observer,
+                element,
+                kAXFocusedUIElementChangedNotification as CFString
+            )
+            AXObserverRemoveNotification(
+                observer,
+                element,
+                kAXValueChangedNotification as CFString
+            )
         }
-        
-        CFRunLoopRemoveSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(observer), .defaultMode)
+
+        CFRunLoopRemoveSource(
+            CFRunLoopGetCurrent(),
+            AXObserverGetRunLoopSource(observer),
+            .defaultMode
+        )
+
         axObserver = nil
         observedElement = nil
         observedApp = -1
     }
-    
+
     private func setupObserverForApp(_ app: AppInfo) {
         let pid = app.processIdentifier
-        
+
         // Create observer
         var observer: AXObserver?
-        let result = AXObserverCreate(pid, { (observer, element, notification, userData) in
-            guard let userData = userData else { return }
-            let textTracker = Unmanaged<TextTracker>.fromOpaque(userData).takeUnretainedValue()
-            textTracker.handleAccessibilityNotification(element: element, notification: notification)
+        let result = AXObserverCreate(pid, { _, element, notification, userData in
+            guard let userData else { return }
+            let textTracker = Unmanaged<TextTracker>.fromOpaque(userData)
+                .takeUnretainedValue()
+            textTracker.handleAccessibilityNotification(
+                element: element,
+                notification: notification
+            )
         }, &observer)
-        
-        guard result == .success, let observer = observer else {
+
+        guard result == .success, let observer else {
             logDebug("Failed to create AXObserver for \(app.name): \(result)")
             return
         }
-        
-        self.axObserver = observer
-        self.observedApp = pid
-        
+
+        axObserver = observer
+        observedApp = pid
+
         // Get the application element
         let appElement = AXUIElementCreateApplication(pid)
-        self.observedElement = appElement
-        
+        observedElement = appElement
+
         let userData = Unmanaged.passUnretained(self).toOpaque()
-        
+
         // Strategy 1: Observe application-wide notifications
         let appNotifications = [
             kAXSelectedTextChangedNotification,
             kAXFocusedUIElementChangedNotification,
             kAXValueChangedNotification,
-            kAXTitleChangedNotification  // Window title changes
+            kAXTitleChangedNotification // Window title changes
         ]
-        
+
         for notification in appNotifications {
             let addResult = AXObserverAddNotification(
                 observer,
@@ -419,7 +466,7 @@ class TextTracker: EventTracker {
                 logDebug("Added app-level \(notification) observer for \(app.name)")
             }
         }
-        
+
         // Strategy 2: Observe focused window specifically for better context
         if let focusedWindow = getFocusedWindow(appElement: appElement) {
             let windowNotifications = [
@@ -427,7 +474,7 @@ class TextTracker: EventTracker {
                 kAXValueChangedNotification,
                 kAXFocusedUIElementChangedNotification
             ]
-            
+
             for notification in windowNotifications {
                 let addResult = AXObserverAddNotification(
                     observer,
@@ -436,138 +483,236 @@ class TextTracker: EventTracker {
                     userData
                 )
                 if addResult == .success {
-                    logDebug("Added window-level \(notification) observer for \(app.name)")
+                    logDebug("Added window-level \(notification) observer for \(app.name)"
+                    )
                 }
             }
         }
-        
+
         // Strategy 3: Observe currently focused element for granular updates
         if let focusedElement = getFocusedElement(appElement: appElement) {
-            setupFocusedElementObserver(observer: observer, element: focusedElement, userData: userData, appName: app.name)
+            setupFocusedElementObserver(
+                observer: observer,
+                element: focusedElement,
+                userData: userData,
+                appName: app.name
+            )
         }
-        
+
         // Add observer to run loop
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(observer), .defaultMode)
-        
+        CFRunLoopAddSource(
+            CFRunLoopGetCurrent(),
+            AXObserverGetRunLoopSource(observer),
+            .defaultMode
+        )
+
         logInfo("Enhanced AXObserver setup complete for \(app.name)")
     }
-    
+
     private func getFocusedWindow(appElement: AXUIElement) -> AXUIElement? {
         var windowRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            appElement,
-            kAXFocusedWindowAttribute as CFString,
-            &windowRef
-        ) == .success,
-              let window = windowRef,
-              CFGetTypeID(window) == AXUIElementGetTypeID() else {
+        guard
+            AXUIElementCopyAttributeValue(
+                appElement,
+                kAXFocusedWindowAttribute as CFString,
+                &windowRef
+            ) == .success,
+            let window = windowRef,
+            CFGetTypeID(window) == AXUIElementGetTypeID()
+        else {
             return nil
         }
         return (window as! AXUIElement)
     }
-    
+
     private func getFocusedElement(appElement: AXUIElement) -> AXUIElement? {
         var focusedRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            appElement,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedRef
-        ) == .success,
-              let focused = focusedRef,
-              CFGetTypeID(focused) == AXUIElementGetTypeID() else {
+        guard
+            AXUIElementCopyAttributeValue(
+                appElement,
+                kAXFocusedUIElementAttribute as CFString,
+                &focusedRef
+            ) == .success,
+            let focused = focusedRef,
+            CFGetTypeID(focused) == AXUIElementGetTypeID()
+        else {
             return nil
         }
         return (focused as! AXUIElement)
     }
-    
-    private func setupFocusedElementObserver(observer: AXObserver, element: AXUIElement, userData: UnsafeMutableRawPointer, appName: String) {
-        // Get element role to determine relevant notifications
-        var roleRef: CFTypeRef?
-        var elementRole = "unknown"
-        if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success,
-           let role = roleRef as? String {
-            elementRole = role
-        }
-        
-        // Determine notifications based on element type
-        var elementNotifications: [String] = []
-        
-        switch elementRole {
-        case "AXTextField", "AXTextArea", "AXSecureTextField":
-            elementNotifications = [
-                kAXValueChangedNotification,
-                kAXSelectedTextChangedNotification,
-                "AXTextSelectionChangedNotification"
-            ]
-        case "AXWebArea":
-            elementNotifications = [
-                kAXValueChangedNotification,
-                kAXSelectedTextChangedNotification,
-                kAXTitleChangedNotification,
-                "AXLoadCompleteNotification"
-            ]
-        case "AXComboBox", "AXPopUpButton":
-            elementNotifications = [
-                kAXValueChangedNotification,
-                "AXMenuItemSelectedNotification"
-            ]
-        case "AXButton", "AXCheckBox", "AXRadioButton":
-            elementNotifications = [
-                kAXValueChangedNotification,
-                "AXPressedNotification"
-            ]
-        default:
-            elementNotifications = [
-                kAXValueChangedNotification,
-                kAXSelectedTextChangedNotification
-            ]
-        }
-        
-        // Add element-specific notifications
-        for notification in elementNotifications {
-            let addResult = AXObserverAddNotification(
-                observer,
+
+    private func setupFocusedElementObserver(
+        observer: AXObserver,
+        element: AXUIElement,
+        userData: UnsafeMutableRawPointer,
+        appName: String
+    ) {
+        do {
+            // Safely get element role to determine relevant notifications
+            var roleRef: CFTypeRef?
+            var elementRole = "unknown"
+
+            let roleResult = AXUIElementCopyAttributeValue(
                 element,
-                notification as CFString,
-                userData
+                kAXRoleAttribute as CFString,
+                &roleRef
             )
-            if addResult == .success {
-                logDebug("Added element-level \(notification) for \(elementRole) in \(appName)")
+            if roleResult == .success, let role = roleRef as? String {
+                elementRole = role
+            }
+            else {
+                logDebug(
+                    "Could not get element role (result: \(roleResult)), using default notifications"
+                )
+            }
+
+            // Determine notifications based on element type
+            var elementNotifications: [String] = []
+
+            switch elementRole {
+            case "AXTextField", "AXTextArea", "AXSecureTextField":
+                elementNotifications = [
+                    kAXValueChangedNotification,
+                    kAXSelectedTextChangedNotification
+                ]
+            case "AXWebArea":
+                elementNotifications = [
+                    kAXValueChangedNotification,
+                    kAXSelectedTextChangedNotification,
+                    kAXTitleChangedNotification
+                ]
+            case "AXComboBox", "AXPopUpButton":
+                elementNotifications = [
+                    kAXValueChangedNotification
+                ]
+            case "AXButton", "AXCheckBox", "AXRadioButton":
+                elementNotifications = [
+                    kAXValueChangedNotification
+                ]
+            default:
+                elementNotifications = [
+                    kAXValueChangedNotification,
+                    kAXSelectedTextChangedNotification
+                ]
+            }
+
+            // Add element-specific notifications with error handling
+            var successCount = 0
+            for notification in elementNotifications {
+                let addResult = AXObserverAddNotification(
+                    observer,
+                    element,
+                    notification as CFString,
+                    userData
+                )
+                if addResult == .success {
+                    successCount += 1
+                    logDebug(
+                        "Added element-level \(notification) for \(elementRole) in \(appName)"
+                    )
+                }
+                else {
+                    // Handle specific AX errors gracefully
+                    let errorMsg = switch addResult.rawValue {
+                    case -25209: "attribute unsupported"
+                    case -25202: "invalid UI element"  
+                    case -25204: "cannot complete"
+                    default: "unknown error \(addResult.rawValue)"
+                    }
+                    logDebug(
+                        "Failed to add \(notification) for \(elementRole): \(errorMsg)"
+                    )
+                }
+            }
+
+            if successCount == 0 {
+                logWarn("No notifications could be added for element \(elementRole)")
+            }
+        }
+        catch {
+            logError("Error in setupFocusedElementObserver: \(error)")
+        }
+    }
+
+    private func handleAccessibilityNotification(
+        element: AXUIElement,
+        notification: CFString
+    ) {
+        guard !isShuttingDown else { return }
+        autoreleasepool {
+            do {
+                let notificationName = notification as String
+                logDebug("START: Processing notification \(notificationName)")
+
+                // Safely get context with error handling
+                let elementContext: String
+                do {
+                    logDebug("STEP 1: Extracting element context")
+                    elementContext = extractFocusedElementContext(element) ?? "unknown"
+                    logDebug("STEP 1: Element context extracted: \(elementContext)")
+                }
+                catch {
+                    logError("STEP 1 FAILED: Failed to extract element context: \(error)")
+                    elementContext = "error"
+                }
+
+                let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
+                let mousePos = getMousePosition()
+                logDebug("STEP 2: Got timestamp and mouse position")
+
+                // Safely handle focused element changes
+                if notificationName == kAXFocusedUIElementChangedNotification {
+                    logDebug("STEP 3: Handling focused element change")
+                    updateObserverTargeting(newFocusedElement: element)
+                    logDebug("STEP 3: Focused element change handled")
+                }
+
+                // Safely check for text changes
+                do {
+                    logDebug("STEP 4: Checking for text events")
+                    if
+                        let event = checkForEvents(
+                            timestamp: timestamp,
+                            mousePosition: mousePos
+                        ) {
+                        logDebug("STEP 4: Text event created, emitting")
+                        eventHandler?(event)
+                        logDebug("STEP 4: Text event emitted")
+                    } else {
+                        logDebug("STEP 4: No text event created")
+                    }
+                }
+                catch {
+                    logError("STEP 4 FAILED: Failed to create text event: \(error)")
+                }
+
+                logDebug("COMPLETE: Notification \(notificationName) processed successfully")
+            }
+            catch {
+                logError("CRITICAL: Error in accessibility notification handler: \(error)")
+                // Don't re-throw to prevent process crash
             }
         }
     }
-    
-    private func handleAccessibilityNotification(element: AXUIElement, notification: CFString) {
-        let notificationName = notification as String
-        
-        // Get additional context from the element that triggered the notification
-        let elementContext = extractFocusedElementContext(element) ?? "unknown"
-        logDebug("Received \(notificationName) from element: \(elementContext)")
-        
-        let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
-        let mousePos = getMousePosition()
-        
-        // For focused element changes, dynamically update observer targeting
-        if notificationName == kAXFocusedUIElementChangedNotification {
-            updateObserverTargeting(newFocusedElement: element)
-        }
-        
-        // Check for text changes with enhanced context
-        if let event = checkForEvents(timestamp: timestamp, mousePosition: mousePos) {
-            eventHandler?(event)
-        }
-    }
-    
+
     private func updateObserverTargeting(newFocusedElement: AXUIElement) {
-        guard let observer = axObserver else { return }
-        
+        guard let observer = axObserver else {
+            logDebug("No observer available for targeting update")
+            return
+        }
+
         // Add targeted observations for the newly focused element
         let userData = Unmanaged.passUnretained(self).toOpaque()
-        setupFocusedElementObserver(observer: observer, element: newFocusedElement, userData: userData, appName: "current")
-        
+        setupFocusedElementObserver(
+            observer: observer,
+            element: newFocusedElement,
+            userData: userData,
+            appName: "current"
+        )
+
         logDebug("Updated observer targeting for newly focused element")
     }
-    
+
     func updateForAppChange(_ newApp: AppInfo) {
         // Only recreate observer if we're switching to a different app
         if newApp.processIdentifier != observedApp {
@@ -592,14 +737,25 @@ class TextTracker: EventTracker {
                 // Determine source based on whether app requires fallback
                 let source = currentApp.requiresFallback ? "observer" : "accessibility-observer"
 
+                // Generate workflow analysis data
+                let workflowContext = WorkflowAnalyzer.generateWorkflowContext(
+                    for: "text_selection",
+                    content: text
+                )
+                let contentMetadata = WorkflowAnalyzer.analyzeContent(text)
+                let interactionContext = WorkflowAnalyzer.generateInteractionContext()
+
                 return TextSelectionEvent(
                     timestamp: timestamp,
                     mousePosition: mousePosition,
+                    workflowContext: workflowContext,
                     app: currentApp,
                     text: text,
                     selectionLength: text.count,
                     source: source,
-                    context: nil
+                    contentMetadata: contentMetadata,
+                    interactionContext: interactionContext,
+                    documentContext: currentApp.windowTitle
                 )
             }
         }
@@ -612,31 +768,52 @@ class TextTracker: EventTracker {
     }
 
     private func extractCurrentText(from app: AppInfo) -> String? {
-        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        do {
+            let appElement = AXUIElementCreateApplication(app.processIdentifier)
 
-        // Strategy 1: Try focused element first (fast path)
-        if let text = extractFromFocusedElement(appElement: appElement) {
-            return text
-        }
-
-        // Strategy 2: Search window tree for text fields (more aggressive)
-        if let text = extractFromWindowTree(appElement: appElement) {
-            return text
-        }
-
-        // Strategy 3: For web apps, search web areas specifically
-        if isWebApp(app: app) {
-            if let text = extractFromWebAreas(appElement: appElement) {
-                return text
+            // Strategy 1: Try focused element first (fast path)
+            do {
+                if let text = try extractFromFocusedElement(appElement: appElement) {
+                    return text
+                }
             }
-        }
+            catch {
+                logDebug("Failed to extract from focused element: \(error)")
+            }
 
-        return nil
+            // Strategy 2: Search window tree for text fields (more aggressive)
+            do {
+                if let text = try extractFromWindowTree(appElement: appElement) {
+                    return text
+                }
+            }
+            catch {
+                logDebug("Failed to extract from window tree: \(error)")
+            }
+
+            // Strategy 3: For web apps, search web areas specifically
+            if isWebApp(app: app) {
+                do {
+                    if let text = try extractFromWebAreas(appElement: appElement) {
+                        return text
+                    }
+                }
+                catch {
+                    logDebug("Failed to extract from web areas: \(error)")
+                }
+            }
+
+            return nil
+        }
+        catch {
+            logError("Critical error in extractCurrentText: \(error)")
+            return nil
+        }
     }
 
     // MARK: - Text Extraction Strategies
 
-    private func extractFromFocusedElement(appElement: AXUIElement) -> String? {
+    private func extractFromFocusedElement(appElement: AXUIElement) throws -> String? {
         var focusedRef: CFTypeRef?
         guard
             AXUIElementCopyAttributeValue(
@@ -649,10 +826,11 @@ class TextTracker: EventTracker {
         else { return nil }
 
         let axElement = focusedElement as! AXUIElement
+
         return extractTextFromElement(axElement)
     }
 
-    private func extractFromWindowTree(appElement: AXUIElement) -> String? {
+    private func extractFromWindowTree(appElement: AXUIElement) throws -> String? {
         // Get focused window
         var windowRef: CFTypeRef?
         guard
@@ -671,7 +849,7 @@ class TextTracker: EventTracker {
         return findTextInElementTree(element: axWindow, depth: 0, maxDepth: 8)
     }
 
-    private func extractFromWebAreas(appElement: AXUIElement) -> String? {
+    private func extractFromWebAreas(appElement: AXUIElement) throws -> String? {
         // Get focused window first
         var windowRef: CFTypeRef?
         guard
@@ -901,70 +1079,99 @@ class BrowserTracker: EventTracker {
     private var axObserver: AXObserver?
     private var observedElement: AXUIElement?
     private var observedApp: pid_t = -1
-    
+    private var isShuttingDown = false
+
     var eventHandler: ((ActivityEvent) -> Void)?
-    
-    deinit {
-        stopObserving()
-    }
-    
+
     func startObserving() {
-        stopObserving() // Clean up any existing observer
-        
+        isShuttingDown = false
+        tearDownObserver(final: false)
         let currentApp = getCurrentAppInfoStructured()
-        guard currentApp.processIdentifier != -1, hasBrowserCapabilities(app: currentApp) else { return }
-        
+        guard
+            currentApp.processIdentifier != -1,
+            hasBrowserCapabilities(app: currentApp)
+        else { return }
         setupObserverForApp(currentApp)
     }
-    
+
     func stopObserving() {
+        tearDownObserver(final: true)
+    }
+
+    deinit {
+        tearDownObserver(final: true)
+    }
+
+    private func tearDownObserver(final: Bool) {
+        if final { isShuttingDown = true }
+
         guard let observer = axObserver else { return }
-        
+
         if let element = observedElement {
-            // Remove browser-specific notifications
-            AXObserverRemoveNotification(observer, element, kAXTitleChangedNotification as CFString)
-            AXObserverRemoveNotification(observer, element, kAXValueChangedNotification as CFString)
-            AXObserverRemoveNotification(observer, element, kAXFocusedUIElementChangedNotification as CFString)
+            AXObserverRemoveNotification(
+                observer,
+                element,
+                kAXTitleChangedNotification as CFString
+            )
+            AXObserverRemoveNotification(
+                observer,
+                element,
+                kAXValueChangedNotification as CFString
+            )
+            AXObserverRemoveNotification(
+                observer,
+                element,
+                kAXFocusedUIElementChangedNotification as CFString
+            )
         }
-        
-        CFRunLoopRemoveSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(observer), .defaultMode)
+
+        CFRunLoopRemoveSource(
+            CFRunLoopGetCurrent(),
+            AXObserverGetRunLoopSource(observer),
+            .defaultMode
+        )
+
         axObserver = nil
         observedElement = nil
         observedApp = -1
     }
-    
+
     private func setupObserverForApp(_ app: AppInfo) {
         let pid = app.processIdentifier
-        
+
         // Create observer
         var observer: AXObserver?
-        let result = AXObserverCreate(pid, { (observer, element, notification, userData) in
-            guard let userData = userData else { return }
-            let browserTracker = Unmanaged<BrowserTracker>.fromOpaque(userData).takeUnretainedValue()
-            browserTracker.handleAccessibilityNotification(element: element, notification: notification)
+        let result = AXObserverCreate(pid, { _, element, notification, userData in
+            guard let userData else { return }
+            let browserTracker = Unmanaged<BrowserTracker>.fromOpaque(userData)
+                .takeUnretainedValue()
+            browserTracker.handleAccessibilityNotification(
+                element: element,
+                notification: notification
+            )
         }, &observer)
-        
-        guard result == .success, let observer = observer else {
+
+        guard result == .success, let observer else {
             logDebug("Failed to create AXObserver for browser \(app.name): \(result)")
             return
         }
-        
-        self.axObserver = observer
-        self.observedApp = pid
-        
+
+        axObserver = observer
+        observedApp = pid
+
         // Get the application element
         let appElement = AXUIElementCreateApplication(pid)
-        self.observedElement = appElement
-        
+        observedElement = appElement
+
         // Add browser-specific notifications
         let userData = Unmanaged.passUnretained(self).toOpaque()
-        
+
         let notifications = [
-            kAXTitleChangedNotification,       // Page title changes
-            kAXValueChangedNotification,       // Address bar changes
+            kAXTitleChangedNotification, // Page title changes
+            kAXValueChangedNotification, // Address bar changes
             kAXFocusedUIElementChangedNotification // Tab switches
         ]
-        
+
         for notification in notifications {
             let addResult = AXObserverAddNotification(
                 observer,
@@ -973,36 +1180,71 @@ class BrowserTracker: EventTracker {
                 userData
             )
             if addResult == .success {
-                logDebug("Successfully added \(notification) observer for browser \(app.name)")
-            } else {
-                logDebug("Failed to add \(notification) observer for browser \(app.name): \(addResult)")
+                logDebug(
+                    "Successfully added \(notification) observer for browser \(app.name)"
+                )
+            }
+            else {
+                logDebug(
+                    "Failed to add \(notification) observer for browser \(app.name): \(addResult)"
+                )
             }
         }
-        
+
         // Add observer to run loop
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(observer), .defaultMode)
-        
+        CFRunLoopAddSource(
+            CFRunLoopGetCurrent(),
+            AXObserverGetRunLoopSource(observer),
+            .defaultMode
+        )
+
         logInfo("Browser AXObserver setup complete for \(app.name)")
     }
-    
-    private func handleAccessibilityNotification(element: AXUIElement, notification: CFString) {
-        let notificationName = notification as String
-        logDebug("Received browser accessibility notification: \(notificationName)")
-        
-        let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
-        let mousePos = getMousePosition()
-        
-        // Check for browser navigation changes
-        if let event = checkForEvents(timestamp: timestamp, mousePosition: mousePos) {
-            eventHandler?(event)
+
+    private func handleAccessibilityNotification(
+        element: AXUIElement,
+        notification: CFString
+    ) {
+        guard !isShuttingDown else { return }
+        autoreleasepool {
+            do {
+                let notificationName = notification as String
+                logDebug(
+                    "Received browser accessibility notification: \(notificationName)"
+                )
+
+                let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
+                let mousePos = getMousePosition()
+
+                // Check for browser navigation changes with error handling
+                do {
+                    if
+                        let event = checkForEvents(
+                            timestamp: timestamp,
+                            mousePosition: mousePos
+                        ) {
+                        eventHandler?(event)
+                    }
+                }
+                catch {
+                    logError("Failed to create browser navigation event: \(error)")
+                }
+            }
+            catch {
+                logError(
+                    "Critical error in browser accessibility notification handler: \(error)"
+                )
+                // Don't re-throw to prevent process crash
+            }
         }
     }
-    
+
     func updateForAppChange(_ newApp: AppInfo) {
         // Only recreate observer if we're switching to a different browser app
         if newApp.processIdentifier != observedApp, hasBrowserCapabilities(app: newApp) {
             setupObserverForApp(newApp)
-        } else if !hasBrowserCapabilities(app: newApp) {
+        }
+        else if !hasBrowserCapabilities(app: newApp) {
             stopObserving()
         }
     }
@@ -1032,7 +1274,7 @@ class BrowserTracker: EventTracker {
         guard capabilities.hasURLSupport || capabilities.hasTitleSupport
         else { return nil }
 
-        // Focused window
+        // Focused window with safe casting
         let appElement = AXUIElementCreateApplication(currentApp.processIdentifier)
         var windowRef: CFTypeRef?
         guard
@@ -1043,7 +1285,10 @@ class BrowserTracker: EventTracker {
             ) == .success,
             let window = windowRef,
             CFGetTypeID(window) == AXUIElementGetTypeID()
-        else { return nil }
+        else {
+            logDebug("Failed to get focused window for browser \(currentApp.name)")
+            return nil
+        }
         let axWindow = window as! AXUIElement
 
         var hasChanges = false
@@ -1215,14 +1460,24 @@ class BrowserTracker: EventTracker {
 
         let domain = URL(string: currentURL)?.host ?? "unknown"
 
+        // Generate workflow analysis data for browser navigation
+        let workflowContext = WorkflowAnalyzer.generateWorkflowContext(
+            for: "browser_navigation",
+            content: currentURL
+        )
+        let interactionContext = WorkflowAnalyzer.generateInteractionContext()
+
         return BrowserNavigationEvent(
             timestamp: timestamp,
             mousePosition: mousePosition,
+            workflowContext: workflowContext,
             app: currentApp,
             currentURL: currentURL,
             domain: domain,
             tabCount: tabCount,
-            pageTitle: currentTitle.isEmpty ? nil : currentTitle
+            pageTitle: currentTitle.isEmpty ? nil : currentTitle,
+            interactionContext: interactionContext,
+            pageCategory: WorkflowAnalyzer.categorizeWebsite(domain)
         )
     }
 
@@ -1613,23 +1868,25 @@ private func getCurrentAppInfoStructured() -> AppInfo {
     var windowTitle: String? = nil
     if hasTree {
         var focusedWindowRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(
-            appElement,
-            kAXFocusedWindowAttribute as CFString,
-            &focusedWindowRef
-        ) == .success,
-           let focusedWindow = focusedWindowRef,
-           CFGetTypeID(focusedWindow) == AXUIElementGetTypeID() {
-            
+        if
+            AXUIElementCopyAttributeValue(
+                appElement,
+                kAXFocusedWindowAttribute as CFString,
+                &focusedWindowRef
+            ) == .success,
+            let focusedWindow = focusedWindowRef,
+            CFGetTypeID(focusedWindow) == AXUIElementGetTypeID() {
+
             let axWindow = focusedWindow as! AXUIElement
             var titleRef: CFTypeRef?
-            if AXUIElementCopyAttributeValue(
-                axWindow,
-                kAXTitleAttribute as CFString,
-                &titleRef
-            ) == .success,
-               let title = titleRef as? String,
-               !title.isEmpty {
+            if
+                AXUIElementCopyAttributeValue(
+                    axWindow,
+                    kAXTitleAttribute as CFString,
+                    &titleRef
+                ) == .success,
+                let title = titleRef as? String,
+                !title.isEmpty {
                 windowTitle = title
             }
         }
@@ -1640,14 +1897,15 @@ private func getCurrentAppInfoStructured() -> AppInfo {
     let canAccessFocus: Bool = {
         guard hasTree else { return false }
         var focusedRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(
-            appElement,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedRef
-        ) == .success,
-           let focusedElement = focusedRef,
-           CFGetTypeID(focusedElement) == AXUIElementGetTypeID() {
-            
+        if
+            AXUIElementCopyAttributeValue(
+                appElement,
+                kAXFocusedUIElementAttribute as CFString,
+                &focusedRef
+            ) == .success,
+            let focusedElement = focusedRef,
+            CFGetTypeID(focusedElement) == AXUIElementGetTypeID() {
+
             let axElement = focusedElement as! AXUIElement
             focusedElementInfo = extractFocusedElementContext(axElement)
             return true
@@ -1673,42 +1931,63 @@ private func getCurrentAppInfoStructured() -> AppInfo {
 
 private func extractFocusedElementContext(_ element: AXUIElement) -> String? {
     var contextParts: [String] = []
-    
+
     // Get role
     var roleRef: CFTypeRef?
-    if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success,
-       let role = roleRef as? String {
+    if
+        AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) ==
+        .success,
+        let role = roleRef as? String {
         contextParts.append("role:\(role)")
     }
-    
+
     // Get role description
     var roleDescRef: CFTypeRef?
-    if AXUIElementCopyAttributeValue(element, kAXRoleDescriptionAttribute as CFString, &roleDescRef) == .success,
-       let roleDesc = roleDescRef as? String {
+    if
+        AXUIElementCopyAttributeValue(
+            element,
+            kAXRoleDescriptionAttribute as CFString,
+            &roleDescRef
+        ) == .success,
+        let roleDesc = roleDescRef as? String {
         contextParts.append("desc:\(roleDesc)")
     }
-    
+
     // Get title/label
     var titleRef: CFTypeRef?
-    if AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &titleRef) == .success,
-       let title = titleRef as? String, !title.isEmpty {
+    if
+        AXUIElementCopyAttributeValue(
+            element,
+            kAXTitleAttribute as CFString,
+            &titleRef
+        ) ==
+        .success,
+        let title = titleRef as? String, !title.isEmpty {
         contextParts.append("title:\(title.prefix(50))")
     }
-    
+
     // Get value for input fields
     var valueRef: CFTypeRef?
-    if AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valueRef) == .success,
-       let value = valueRef as? String, !value.isEmpty {
+    if
+        AXUIElementCopyAttributeValue(
+            element,
+            kAXValueAttribute as CFString,
+            &valueRef
+        ) ==
+        .success,
+        let value = valueRef as? String, !value.isEmpty {
         contextParts.append("value:\(value.prefix(30))")
     }
-    
+
     // Get help text
     var helpRef: CFTypeRef?
-    if AXUIElementCopyAttributeValue(element, kAXHelpAttribute as CFString, &helpRef) == .success,
-       let help = helpRef as? String, !help.isEmpty {
+    if
+        AXUIElementCopyAttributeValue(element, kAXHelpAttribute as CFString, &helpRef) ==
+        .success,
+        let help = helpRef as? String, !help.isEmpty {
         contextParts.append("help:\(help.prefix(50))")
     }
-    
+
     return contextParts.isEmpty ? nil : contextParts.joined(separator: "|")
 }
 
@@ -1718,9 +1997,38 @@ public enum ActivityTrackerError: Error {
     case accessibilityNotGranted
 }
 
+// MARK: - Crash Debug Signal Handler
+
+private func setupCrashHandler() {
+    signal(SIGILL) { signal in
+        print("\n🚨 SIGILL CRASH DETECTED!")
+        print("Signal: \(signal)")
+        print("Thread: \(Thread.current)")
+        print("Stack trace:")
+        Thread.callStackSymbols.forEach { symbol in
+            print("  \(symbol)")
+        }
+        print("🚨 CRASH END\n")
+        exit(132)  // Exit with SIGILL code
+    }
+    
+    signal(SIGSEGV) { signal in
+        print("\n🚨 SIGSEGV CRASH DETECTED!")
+        print("Signal: \(signal)")
+        print("Thread: \(Thread.current)")
+        print("Stack trace:")
+        Thread.callStackSymbols.forEach { symbol in
+            print("  \(symbol)")
+        }
+        print("🚨 CRASH END\n")
+        exit(139)  // Exit with SIGSEGV code
+    }
+}
+
 // MARK: – Public API
 
 public func runActivityTracker(config: ActivityTrackerConfig = .default) {
+    setupCrashHandler()
     let tracker = ActivityTracker(config: config)
 
     do {
@@ -1736,4 +2044,603 @@ public func runActivityTracker(config: ActivityTrackerConfig = .default) {
 
 public func runActivityTrackerComprehensive() {
     runActivityTracker(config: .comprehensive)
+}
+
+// MARK: - Workflow Analysis Utilities
+
+class WorkflowAnalyzer {
+    private static var currentSessionId = UUID().uuidString
+    private static var sequenceCounter: Int64 = 0
+    private static var lastEventTime: Date = .init()
+    private static var lastContextHash = ""
+    private static var appCategoryCache: [String: String] = [:]
+
+    static func generateWorkflowContext(
+        for event: String,
+        content: String? = nil
+    )
+        -> WorkflowContext {
+        // Ultra-safe version to prevent all crashes
+        let now = Date()
+        let timeSinceLastEvent = max(0, now.timeIntervalSince(lastEventTime))
+        
+        // Reset session if too much time has passed (30 minutes)
+        if timeSinceLastEvent > 1800 {
+            currentSessionId = UUID().uuidString
+            sequenceCounter = 0
+        }
+        
+        // Safe increment with bounds checking
+        if sequenceCounter < Int64.max - 1 {
+            sequenceCounter += 1
+        } else {
+            sequenceCounter = 1
+        }
+        
+        lastEventTime = now
+        
+        // Simple, safe hash without complex operations
+        let simpleHash = String((event + (content ?? "")).count)
+        let phase = lastContextHash == simpleHash ? "focused" : "transition"
+        
+        lastContextHash = simpleHash
+        
+        return WorkflowContext(
+            sessionId: currentSessionId,
+            sequenceNumber: sequenceCounter,
+            timeSinceLastEvent: timeSinceLastEvent,
+            contextHash: simpleHash,
+            workflowPhase: phase
+        )
+    }
+
+    static func analyzeContent(_ text: String) -> ContentMetadata {
+        let contentType = classifyContentType(text)
+
+        return ContentMetadata(
+            contentType: contentType
+        )
+    }
+
+    static func generateInteractionContext() -> InteractionContext {
+        let isMultitasking = isMultitaskingActive()
+
+        return InteractionContext(
+            isMultitasking: isMultitasking // TODO: Add the names of the apps
+        )
+    }
+
+    // MARK: - Content Analysis Functions
+
+    /// Classifies text content into semantic categories for better context understanding
+    /// - Parameter text: The text content to classify
+    /// - Returns: A string representing the content type, or "text" as fallback
+    private static func classifyContentType(_ text: String) -> String {
+        // Early exit for empty or very short text
+        guard
+            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            text.count >= 3
+        else {
+            return "text"
+        }
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowercased = trimmed.lowercased()
+
+        if isEmailContent(trimmed, lowercased: lowercased) {
+            return "email"
+        }
+        if isCodeContent(trimmed, lowercased: lowercased) {
+            return "code"
+        }
+        if isWebContent(trimmed, lowercased: lowercased) {
+            return "web"
+        }
+        if isTaskContent(trimmed, lowercased: lowercased) {
+            return "task"
+        }
+        if isCalendarContent(trimmed, lowercased: lowercased) {
+            return "calendar"
+        }
+        return "text"
+    }
+
+    // MARK: - Content Type Detectors
+
+    /// Detects email content with safe pattern matching (no regex)
+    private static func isEmailContent(_ text: String, lowercased: String) -> Bool {
+        // Simple email detection without dangerous regex
+        let hasAtAndDot = lowercased.contains("@") && lowercased.contains(".")
+
+        // Email header patterns
+        let emailHeaders = [
+            "from:",
+            "to:",
+            "subject:",
+            "cc:",
+            "bcc:",
+            "reply-to:",
+            "date:"
+        ]
+        let hasEmailHeaders = emailHeaders.contains { lowercased.contains($0) }
+
+        // Email signature patterns
+        let hasEmailSignature = lowercased.contains("sent from my") ||
+            lowercased.contains("best regards") ||
+            lowercased.contains("sincerely")
+
+        return hasAtAndDot || hasEmailHeaders || hasEmailSignature
+    }
+
+    /// Detects code content with comprehensive language patterns
+    private static func isCodeContent(_ text: String, lowercased: String) -> Bool {
+        // Programming language keywords and patterns
+        let codeKeywords = [
+            // General programming
+            "func ", "function ", "def ", "class ", "struct ", "enum ", "interface ",
+            "import ", "#include", "require(", "from ", "export ",
+            // Control flow
+            "if (", "else {", "for (", "while (", "switch (", "case ",
+            // Common symbols
+            " => ", " -> ", "() {", "} else", "return ", "throw ",
+            // Language specific
+            "console.log", "print(", "println", "std::", "public class", "private "
+        ]
+
+        let hasCodeKeywords = codeKeywords.contains { lowercased.contains($0) }
+
+        // Check for code-like structure (brackets, semicolons, etc.)
+        let codeStructureCount = text.filter { "{};()[]<>".contains($0) }.count
+        let hasCodeStructure = codeStructureCount > text
+            .count / 20 // At least 5% structural chars
+
+        // File extension patterns in text
+        let codeExtensions = [
+            ".js",
+            ".py",
+            ".swift",
+            ".java",
+            ".cpp",
+            ".c",
+            ".h",
+            ".ts",
+            ".go",
+            ".rs"
+        ]
+        let hasCodeExtensions = codeExtensions.contains { lowercased.contains($0) }
+
+        return hasCodeKeywords || (hasCodeStructure && text.count > 50) ||
+            hasCodeExtensions
+    }
+
+    /// Detects web content (URLs, HTML, etc.) - safe string matching only
+    private static func isWebContent(_ text: String, lowercased: String) -> Bool {
+        // URL patterns
+        let urlPrefixes = ["http://", "https://", "www.", "ftp://"]
+        let hasURL = urlPrefixes.contains { lowercased.contains($0) }
+
+        // HTML/XML patterns
+        let htmlPatterns = ["<html", "<div", "<span", "<p>", "</", "href=", "src="]
+        let hasHTML = htmlPatterns.contains { lowercased.contains($0) }
+
+        // Simple domain detection without dangerous regex
+        let domainSuffixes = [".com", ".org", ".net", ".edu", ".gov", ".io", ".co"]
+        let hasDomain = domainSuffixes.contains { lowercased.contains($0) }
+
+        return hasURL || hasHTML || hasDomain
+    }
+
+    /// Detects task/todo content
+    private static func isTaskContent(_ text: String, lowercased: String) -> Bool {
+        let taskKeywords = [
+            "todo:", "task:", "fixme:", "hack:", "note:",
+            "[ ]", "[x]", "- [ ]", "- [x]",
+            "deadline:", "due:", "priority:", "assigned:"
+        ]
+
+        let hasTaskKeywords = taskKeywords.contains { lowercased.contains($0) }
+
+        // Check for numbered/bulleted lists that might be tasks - safe string matching
+        let lines = text.components(separatedBy: .newlines)
+        let taskLikeLines = lines.filter { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces).lowercased()
+            return trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") ||
+                (trimmed.count > 3 && trimmed.prefix(3).allSatisfy { $0.isNumber || $0 == "." || $0 == " " })
+        }
+
+        let hasTaskStructure = taskLikeLines.count >= 2 && taskLikeLines.count > lines
+            .count / 3
+
+        return hasTaskKeywords || hasTaskStructure
+    }
+
+    /// Detects calendar/meeting content
+    private static func isCalendarContent(_ text: String, lowercased: String) -> Bool {
+        let calendarKeywords = [
+            "meeting", "schedule", "appointment", "calendar", "event",
+            "zoom", "teams", "webex", "conference call",
+            "agenda", "attendees", "location:", "when:", "time:",
+            "am", "pm", "today", "tomorrow", "monday", "tuesday", "wednesday", "thursday",
+            "friday"
+        ]
+
+        let keywordMatches = calendarKeywords.filter { lowercased.contains($0) }.count
+
+        // Simple time/date detection without dangerous regex
+        let hasTimePattern = lowercased.contains(":") && (lowercased.contains("am") || lowercased.contains("pm"))
+        
+        let hasDatePattern = lowercased.contains("/") || lowercased.contains("-") || 
+                             lowercased.contains("monday") || lowercased.contains("tuesday") ||
+                             lowercased.contains("2024") || lowercased.contains("2025")
+
+        return keywordMatches >= 2 || hasTimePattern || hasDatePattern
+    }
+
+    // MARK: - Context Analysis Functions
+
+    private static func generateContextHash(event: String, content: String?) -> String {
+        // Simplified context hash to avoid expensive accessibility calls
+        // Sanitize inputs to prevent hash computation issues
+        let safeEvent = event.prefix(20).description
+        let safeContent = content?.prefix(30).description ?? ""
+        
+        // Use a simple, safe hash approach
+        let combined = "\(safeEvent)|\(safeContent)"
+        
+        // Create a safer hash using djb2 algorithm to avoid Swift's hashValue issues
+        var hash: UInt32 = 5381
+        for char in combined.utf8 {
+            hash = hash &* 33 &+ UInt32(char)
+        }
+        
+        return String(hash)
+    }
+
+    private static func inferWorkflowPhase(
+        currentHash: String,
+        previousHash: String
+    )
+        -> String {
+        if currentHash == previousHash {
+            return "focused"
+        }
+        else {
+            // Safe comparison avoiding overflow issues
+            let currentHashValue = currentHash.hashValue
+            let previousHashValue = previousHash.hashValue
+            
+            // Use safe difference calculation by working with Int64
+            let current64 = Int64(currentHashValue)
+            let previous64 = Int64(previousHashValue)
+            let difference = abs(current64 - previous64)
+            
+            if difference < 1000 {
+                return "related"
+            } else {
+                return "transition"
+            }
+        }
+    }
+
+    private static func isMultitaskingActive() -> Bool {
+        // Simplified multitasking detection to avoid expensive NSWorkspace calls
+        // Just return a reasonable default for now
+        return true
+    }
+
+    /// Categorizes applications by their bundle identifier with comprehensive pattern
+    /// matching
+    /// - Parameter bundleId: The application bundle identifier
+    /// - Returns: A category string or nil if unable to categorize
+    static func categorizeApp(_ bundleId: String) -> String? {
+        // Check cache first for performance
+        if let cached = appCategoryCache[bundleId] {
+            return cached
+        }
+
+        guard !bundleId.isEmpty else { return "other" }
+
+        let lowercased = bundleId.lowercased()
+        let category = determineAppCategory(lowercased)
+
+        // Cache the result for future lookups
+        if let category {
+            appCategoryCache[bundleId] = category
+        }
+
+        return category
+    }
+
+    /// Categorizes websites by their domain with enhanced pattern recognition
+    /// - Parameter domain: The website domain
+    /// - Returns: A category string representing the website type
+    static func categorizeWebsite(_ domain: String) -> String? {
+        guard !domain.isEmpty else { return "web" }
+
+        let cleaned = cleanDomain(domain)
+        let lowercased = cleaned.lowercased()
+
+        return determineWebsiteCategory(lowercased)
+    }
+
+    // MARK: - App Category Detectors
+
+    /// Determines the category of an application based on its bundle identifier
+    private static func determineAppCategory(_ bundleId: String) -> String? {
+        if isDevelopmentApp(bundleId) {
+            return "development"
+        }
+        if isCommunicationApp(bundleId) {
+            return "communication"
+        }
+        if isWebBrowser(bundleId) {
+            return "web"
+        }
+        if isWritingApp(bundleId) {
+            return "writing"
+        }
+        if isDataApp(bundleId) {
+            return "data"
+        }
+        if isEntertainmentApp(bundleId) {
+            return "entertainment"
+        }
+        if isDesignApp(bundleId) {
+            return "design"
+        }
+        if isProductivityApp(bundleId) {
+            return "productivity"
+        }
+        if isSystemApp(bundleId) {
+            return "system"
+        }
+        return "other"
+    }
+
+    /// Detects development applications
+    private static func isDevelopmentApp(_ bundleId: String) -> Bool {
+        let devPatterns = [
+            "xcode", "vscode", "code", "intellij", "pycharm", "webstorm", "phpstorm",
+            "sublime", "atom", "vim", "emacs", "terminal", "iterm", "git", "github",
+            "sourcetree", "tower", "fork", "postman", "insomnia", "docker",
+            "simulator", "instruments", "dash", "kaleidoscope", "beyond", "compare"
+        ]
+        return devPatterns.contains { bundleId.contains($0) }
+    }
+
+    /// Detects communication applications
+    private static func isCommunicationApp(_ bundleId: String) -> Bool {
+        let commPatterns = [
+            "slack", "teams", "zoom", "skype", "discord", "telegram", "whatsapp",
+            "signal", "facetime", "messages", "mail", "outlook", "thunderbird",
+            "spark", "airmail", "canary", "mimestream", "webex", "gotomeeting"
+        ]
+        return commPatterns.contains { bundleId.contains($0) }
+    }
+
+    /// Detects web browsers
+    private static func isWebBrowser(_ bundleId: String) -> Bool {
+        let browserPatterns = [
+            "safari", "chrome", "firefox", "edge", "opera", "brave", "arc",
+            "vivaldi", "tor", "webkit", "browser"
+        ]
+        return browserPatterns.contains { bundleId.contains($0) }
+    }
+
+    /// Detects writing and document applications
+    private static func isWritingApp(_ bundleId: String) -> Bool {
+        let writingPatterns = [
+            "word", "pages", "docs", "writer", "scrivener", "ulysses", "bear",
+            "notion", "obsidian", "typora", "markdown", "drafts", "iawriter",
+            "byword", "writeroom", "focused", "textedit"
+        ]
+        return writingPatterns.contains { bundleId.contains($0) }
+    }
+
+    /// Detects data and spreadsheet applications
+    private static func isDataApp(_ bundleId: String) -> Bool {
+        let dataPatterns = [
+            "excel", "numbers", "sheets", "calc", "tableau", "power", "bi",
+            "database", "sequel", "mysql", "postgres", "mongodb", "redis",
+            "datagrip", "navicat", "querious", "core", "data"
+        ]
+        return dataPatterns.contains { bundleId.contains($0) }
+    }
+
+    /// Detects entertainment applications
+    private static func isEntertainmentApp(_ bundleId: String) -> Bool {
+        let entertainmentPatterns = [
+            "spotify", "music", "netflix", "youtube", "twitch", "steam", "epic",
+            "games", "tv", "video", "vlc", "plex", "kodi", "quicktime",
+            "photos", "preview", "adobe", "lightroom", "photoshop"
+        ]
+        return entertainmentPatterns.contains { bundleId.contains($0) }
+    }
+
+    /// Detects design and creative applications
+    private static func isDesignApp(_ bundleId: String) -> Bool {
+        let designPatterns = [
+            "sketch", "figma", "adobe", "photoshop", "illustrator", "indesign",
+            "after", "effects", "premiere", "final", "cut", "logic", "pro",
+            "garageband", "keynote", "powerpoint", "canva", "affinity",
+            "pixelmator", "procreate", "blender", "cinema", "maya"
+        ]
+        return designPatterns.contains { bundleId.contains($0) }
+    }
+
+    /// Detects productivity applications
+    private static func isProductivityApp(_ bundleId: String) -> Bool {
+        let productivityPatterns = [
+            "calendar", "reminder", "todo", "task", "project", "trello", "asana",
+            "monday", "clickup", "notion", "evernote", "onenote", "notes",
+            "finder", "file", "manager", "dropbox", "drive", "icloud",
+            "1password", "keychain", "bitwarden", "lastpass"
+        ]
+        return productivityPatterns.contains { bundleId.contains($0) }
+    }
+
+    /// Detects system and utility applications
+    private static func isSystemApp(_ bundleId: String) -> Bool {
+        let systemPatterns = [
+            "activity", "monitor", "console", "system", "preferences", "settings",
+            "cleaner", "disk", "utility", "maintenance", "backup", "time", "machine",
+            "migration", "boot", "camp", "parallels", "vmware", "virtualbox"
+        ]
+        return systemPatterns.contains { bundleId.contains($0) }
+    }
+
+    // MARK: - Website Category Detectors
+
+    /// Cleans and normalizes domain for categorization
+    private static func cleanDomain(_ domain: String) -> String {
+        var cleaned = domain.lowercased()
+
+        // Remove common prefixes
+        let prefixes = ["https://", "http://", "www.", "m."]
+        for prefix in prefixes {
+            if cleaned.hasPrefix(prefix) {
+                cleaned = String(cleaned.dropFirst(prefix.count))
+            }
+        }
+
+        // Remove path and query parameters
+        if let slashIndex = cleaned.firstIndex(of: "/") {
+            cleaned = String(cleaned[..<slashIndex])
+        }
+
+        return cleaned
+    }
+
+    /// Determines the category of a website based on its domain
+    private static func determineWebsiteCategory(_ domain: String) -> String? {
+        if isDevelopmentSite(domain) {
+            return "development"
+        }
+        if isCommunicationSite(domain) {
+            return "communication"
+        }
+        if isSearchSite(domain) {
+            return "search"
+        }
+        if isEntertainmentSite(domain) {
+            return "entertainment"
+        }
+        if isShoppingSite(domain) {
+            return "shopping"
+        }
+        if isNewsSite(domain) {
+            return "news"
+        }
+        if isSocialSite(domain) {
+            return "social"
+        }
+        if isEmailSite(domain) {
+            return "email"
+        }
+        if isEducationalSite(domain) {
+            return "education"
+        }
+        if isFinanceSite(domain) {
+            return "finance"
+        }
+        return "web"
+    }
+
+    /// Detects development and technical websites
+    private static func isDevelopmentSite(_ domain: String) -> Bool {
+        let devSites = [
+            "github", "gitlab", "bitbucket", "stackoverflow", "stackexchange",
+            "docs.", "developer.", "api.", "npmjs", "pypi", "maven", "nuget",
+            "docker", "kubernetes", "aws", "azure", "gcp", "heroku", "vercel",
+            "netlify", "codepen", "jsfiddle", "repl", "codesandbox"
+        ]
+        return devSites.contains { domain.contains($0) }
+    }
+
+    /// Detects communication websites
+    private static func isCommunicationSite(_ domain: String) -> Bool {
+        let commSites = [
+            "slack", "teams", "discord", "telegram", "whatsapp", "signal",
+            "zoom", "meet", "webex", "gotomeeting", "skype", "facetime"
+        ]
+        return commSites.contains { domain.contains($0) }
+    }
+
+    /// Detects search engines
+    private static func isSearchSite(_ domain: String) -> Bool {
+        let searchSites = [
+            "google", "bing", "yahoo", "duckduckgo", "baidu", "yandex",
+            "search", "ask", "aol", "startpage", "searx"
+        ]
+        return searchSites.contains { domain.contains($0) }
+    }
+
+    /// Detects entertainment websites
+    private static func isEntertainmentSite(_ domain: String) -> Bool {
+        let entertainmentSites = [
+            "youtube", "netflix", "hulu", "disney", "amazon", "prime", "video",
+            "twitch", "spotify", "apple", "music", "soundcloud", "pandora",
+            "steam", "epic", "games", "ign", "gamespot", "polygon"
+        ]
+        return entertainmentSites.contains { domain.contains($0) }
+    }
+
+    /// Detects shopping websites
+    private static func isShoppingSite(_ domain: String) -> Bool {
+        let shoppingSites = [
+            "amazon", "ebay", "etsy", "shopify", "walmart", "target", "bestbuy",
+            "shop", "store", "buy", "cart", "checkout", "alibaba", "aliexpress",
+            "mercado", "craigslist", "marketplace"
+        ]
+        return shoppingSites.contains { domain.contains($0) }
+    }
+
+    /// Detects news and media websites
+    private static func isNewsSite(_ domain: String) -> Bool {
+        let newsSites = [
+            "cnn", "bbc", "reuters", "ap", "news", "nytimes", "wsj", "guardian",
+            "fox", "msnbc", "npr", "pbs", "abc", "cbs", "nbc", "bloomberg",
+            "techcrunch", "verge", "wired", "ars", "engadget", "gizmodo"
+        ]
+        return newsSites.contains { domain.contains($0) }
+    }
+
+    /// Detects social media websites
+    private static func isSocialSite(_ domain: String) -> Bool {
+        let socialSites = [
+            "facebook", "twitter", "instagram", "linkedin", "tiktok", "snapchat",
+            "reddit", "pinterest", "tumblr", "mastodon", "threads", "bluesky",
+            "social", "community", "forum"
+        ]
+        return socialSites.contains { domain.contains($0) }
+    }
+
+    /// Detects email service websites
+    private static func isEmailSite(_ domain: String) -> Bool {
+        let emailSites = [
+            "gmail", "outlook", "yahoo", "mail", "protonmail", "tutanota",
+            "fastmail", "icloud", "aol", "thunderbird"
+        ]
+        return emailSites.contains { domain.contains($0) }
+    }
+
+    /// Detects educational websites
+    private static func isEducationalSite(_ domain: String) -> Bool {
+        let educationSites = [
+            "edu", "coursera", "udemy", "khan", "edx", "mit", "stanford",
+            "harvard", "university", "college", "school", "learn", "tutorial",
+            "wikipedia", "wiki", "academic", "research"
+        ]
+        return educationSites.contains { domain.contains($0) }
+    }
+
+    /// Detects finance and banking websites
+    private static func isFinanceSite(_ domain: String) -> Bool {
+        let financeSites = [
+            "bank", "chase", "wells", "fargo", "citi", "bofa", "paypal", "venmo",
+            "stripe", "square", "mint", "quicken", "turbotax", "credit", "loan",
+            "mortgage", "invest", "trading", "crypto", "bitcoin", "coinbase"
+        ]
+        return financeSites.contains { domain.contains($0) }
+    }
 }
